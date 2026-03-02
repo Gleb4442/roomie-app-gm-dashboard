@@ -7,6 +7,41 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum StaffRole {
+  GENERAL_MANAGER
+  HEAD_OF_DEPT
+  SUPERVISOR
+  LINE_STAFF
+  RECEPTIONIST
+}
+
+enum StaffDepartment {
+  HOUSEKEEPING
+  MAINTENANCE
+  FOOD_AND_BEVERAGE
+  FRONT_OFFICE
+  SECURITY
+  MANAGEMENT
+}
+
+enum TaskStatus {
+  NEW
+  ASSIGNED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  INSPECTED
+  CLOSED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
 enum EntrySource {
   widget
   qr_room
@@ -105,6 +140,9 @@ model Hotel {
   serviceCategories  ServiceCategory[]
   serviceRequests    ServiceRequest[]
   tmsConfig          HotelTMSConfig?
+  staffMembers       StaffMember[]
+  internalTasks      InternalTask[]
+  taskTemplates      TaskTemplate[]
 
   @@map("hotels")
 }
@@ -266,6 +304,12 @@ model Order {
 
   maxCookingTime      Int?
   estimatedAt         DateTime?
+
+  assignedStaffId     String?
+  staffNote           String?
+  estimatedMinutes    Int?
+  priority            TaskPriority @default(NORMAL)
+  tmsTaskId           String?
 
   confirmedAt         DateTime?
   preparingAt         DateTime?
@@ -506,6 +550,11 @@ model ServiceRequest {
   externalTaskId  String?
   externalSystem  String?
 
+  assignedStaffId String?
+  staffNote       String?
+  priority        TaskPriority @default(NORMAL)
+  tmsTaskId       String?
+
   hotel           Hotel              @relation(fields: [hotelId], references: [id])
   guest           GuestAccount       @relation(fields: [guestId], references: [id])
   guestStay       GuestStay?         @relation(fields: [guestStayId], references: [id])
@@ -535,6 +584,169 @@ model ServiceRequestItem {
 
   @@index([serviceRequestId])
   @@map("service_request_items")
+}
+
+// ──── Staff Members ───────────────────────────────────────────
+
+model StaffMember {
+  id            String          @id @default(uuid())
+  hotelId       String
+  email         String
+  phone         String?
+  firstName     String
+  lastName      String?
+  role          StaffRole
+  department    StaffDepartment
+  passwordHash  String
+  pin           String?
+  isActive        Boolean         @default(true)
+  avatarUrl       String?
+  fcmToken        String?
+  expoPushToken   String?
+  assignedFloor   String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  hotel           Hotel            @relation(fields: [hotelId], references: [id])
+  shifts          StaffShift[]
+  createdTasks    InternalTask[]   @relation("CreatedTasks")
+  assignedTasks   InternalTask[]   @relation("AssignedTasks")
+  comments        TaskComment[]
+  uploads         TaskAttachment[]
+
+  @@unique([hotelId, email])
+  @@index([hotelId, isActive])
+  @@map("staff_members")
+}
+
+model StaffShift {
+  id        String      @id @default(uuid())
+  staffId   String
+  hotelId   String
+  startedAt DateTime    @default(now())
+  endedAt   DateTime?
+  isActive  Boolean     @default(true)
+
+  staff     StaffMember @relation(fields: [staffId], references: [id])
+
+  @@index([hotelId, isActive])
+  @@map("staff_shifts")
+}
+
+// ──── Internal Tasks (non-guest) ─────────────────────────────
+
+model InternalTask {
+  id            String        @id @default(uuid())
+  hotelId       String
+  title         String
+  description   String?
+  department    StaffDepartment
+  locationLabel String?
+  roomNumber    String?
+  priority      TaskPriority  @default(NORMAL)
+  status        TaskStatus    @default(NEW)
+  createdById   String
+  assignedToId  String?
+  templateId    String?
+  slaMinutes    Int?
+  dueAt         DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  closedAt      DateTime?
+  holdReason    String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  hotel        Hotel          @relation(fields: [hotelId], references: [id])
+  createdBy    StaffMember    @relation("CreatedTasks", fields: [createdById], references: [id])
+  assignedTo   StaffMember?   @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  template     TaskTemplate?  @relation(fields: [templateId], references: [id])
+  checklist    TaskChecklist?
+
+  @@index([hotelId, status])
+  @@index([hotelId, department])
+  @@index([assignedToId])
+  @@map("internal_tasks")
+}
+
+// ──── Task Templates & Checklists ────────────────────────────
+
+model TaskTemplate {
+  id              String          @id @default(uuid())
+  hotelId         String
+  name            String
+  department      StaffDepartment
+  defaultPriority TaskPriority    @default(NORMAL)
+  slaMinutes      Int?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+
+  hotel           Hotel           @relation(fields: [hotelId], references: [id])
+  checklistItems  ChecklistItem[]
+  tasks           InternalTask[]
+
+  @@index([hotelId, isActive])
+  @@map("task_templates")
+}
+
+model ChecklistItem {
+  id          String       @id @default(uuid())
+  templateId  String
+  text        String
+  isRequired  Boolean      @default(true)
+  sortOrder   Int          @default(0)
+
+  template    TaskTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@map("checklist_items")
+}
+
+model TaskChecklist {
+  id             String       @id @default(uuid())
+  taskId         String       @unique
+  taskType       String       // INTERNAL | ORDER | SERVICE_REQUEST
+  completedItems Json         @default("{}")
+  isComplete     Boolean      @default(false)
+  updatedAt      DateTime     @updatedAt
+
+  internalTask   InternalTask @relation(fields: [taskId], references: [id])
+
+  @@map("task_checklists")
+}
+
+// ──── Task Attachments (photos before/after) ─────────────────
+
+model TaskAttachment {
+  id        String      @id @default(uuid())
+  taskId    String
+  taskType  String      // INTERNAL | ORDER | SERVICE_REQUEST
+  staffId   String
+  fileUrl   String
+  fileType  String      @default("image/jpeg")
+  label     String?     // "before" | "after"
+  createdAt DateTime    @default(now())
+
+  uploader  StaffMember @relation(fields: [staffId], references: [id])
+
+  @@index([taskId, taskType])
+  @@map("task_attachments")
+}
+
+// ──── Task Comments ───────────────────────────────────────────
+
+model TaskComment {
+  id        String      @id @default(uuid())
+  taskId    String
+  taskType  String      // INTERNAL | ORDER | SERVICE_REQUEST
+  staffId   String
+  text      String
+  createdAt DateTime    @default(now())
+
+  author    StaffMember @relation(fields: [staffId], references: [id])
+
+  @@index([taskId, taskType])
+  @@map("task_comments")
 }
 
 // ──── TMS Configuration ──────────────────────────────────────

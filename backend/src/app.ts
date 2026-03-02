@@ -14,6 +14,8 @@ import smsRoutes from './modules/sms/sms.routes';
 import adminRoutes from './modules/admin/admin.routes';
 import dashboardRoutes from './modules/dashboard/dashboard.routes';
 import taskRoutes from './modules/task/task.routes';
+import staffRoutes from './modules/staff/staff.routes';
+import staffDashboardRoutes from './modules/staff/staff-dashboard.routes';
 import qrFallbackRoutes from './modules/qr/qr.routes';
 import { errorHandler } from './shared/middleware/errorHandler';
 import { env } from './config/environment';
@@ -22,6 +24,7 @@ import { env } from './config/environment';
 import './jobs/orderTimer.job';
 import './jobs/posSync.job';
 import './jobs/pmsSyncJob';
+import './jobs/slaMonitor.job';
 
 // Start SMS worker
 import './modules/sms/smsQueue';
@@ -52,11 +55,15 @@ app.use('/api/pos', posRoutes);
 app.use('/api', pmsRoutes);
 app.use('/api', smsRoutes);
 
+// ── Staff API (Hotel staff — separate JWT) ────────────────────────────────────
+app.use('/api/staff', staffRoutes);
+
 // ── Admin API (HotelMol team) ─────────────────────────────────────────────────
 app.use('/api/admin', adminRoutes);
 
 // ── Dashboard API (Hotel GMs) ─────────────────────────────────────────────────
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/dashboard/staff', staffDashboardRoutes);
 
 // ── QR fallback page (deep link redirect) ─────────────────────────────────────
 app.use('/qr', qrFallbackRoutes);

@@ -9,6 +9,7 @@ router.post('/verify-otp', guestController.verifyOtp);
 router.post('/login', guestController.login);
 router.post('/refresh', guestController.refresh);
 router.get('/me', authenticateGuestJWT, guestController.getMe);
+router.put('/me', authenticateGuestJWT, guestController.updateProfile);
 router.post('/quick-register', guestController.quickRegister);
 router.post('/link-hotel', authenticateGuestJWT, guestController.linkHotel);
 router.post('/link-booking', authenticateGuestJWT, guestController.linkBooking);

@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { guestService } from './guest.service';
+import { guestService, updateGuestProfile } from './guest.service';
 import {
   registerSchema,
   verifyOtpSchema,
@@ -109,6 +109,17 @@ export const guestController = {
         return res.status(400).json({ success: false, error: 'email query parameter is required' });
       }
       const result = await guestService.findByEmail(email);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async updateProfile(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const guestId = req.guest!.id;
+      const { firstName, lastName, phone } = req.body;
+      const result = await updateGuestProfile(guestId, { firstName, lastName, phone });
       res.status(200).json({ success: true, data: result });
     } catch (err) {
       next(err);

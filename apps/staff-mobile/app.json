@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "HotelMol Staff",
+    "slug": "hotelmol-staff",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "hotelmol-staff",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1152D4"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hotelmol.staff"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1152D4"
+      },
+      "package": "com.hotelmol.staff"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      ["expo-notifications", { "color": "#1152D4" }],
+      ["expo-camera", { "cameraPermission": "Allow HotelMol Staff to access camera for task photos and QR scanning." }]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

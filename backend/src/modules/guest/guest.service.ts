@@ -206,3 +206,17 @@ export const guestService = {
     };
   },
 };
+
+// Note: This extends guestService after module definition via an export
+export async function updateGuestProfile(guestId: string, data: { firstName?: string; lastName?: string; phone?: string }) {
+  const updated = await prisma.guestAccount.update({
+    where: { id: guestId },
+    data: {
+      ...(data.firstName ? { firstName: data.firstName } : {}),
+      ...(data.lastName !== undefined ? { lastName: data.lastName } : {}),
+      ...(data.phone ? { phone: data.phone } : {}),
+    },
+    select: { id: true, email: true, phone: true, firstName: true, lastName: true, roomieChatId: true },
+  });
+  return updated;
+}

@@ -186,3 +186,54 @@ export async function completePreCheckin(req: AuthenticatedRequest, res: Respons
     next(err);
   }
 }
+
+export async function nativeSubmit(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const guestId = req.guest!.id;
+    const {
+      firstName, lastName, nationality, documentType, documentNumber,
+      birthDate, phone, preferences,
+    } = req.body;
+
+    const stay = await prisma.guestStay.findFirst({
+      where: {
+        guestId,
+        stage: { in: ['PRE_ARRIVAL', 'CHECKED_IN', 'IN_STAY'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!stay) {
+      return res.status(404).json({ success: false, error: 'No active stay found' });
+    }
+
+    const formData = {
+      firstName, lastName, nationality, documentType, documentNumber,
+      birthDate, phone, preferences,
+      submittedAt: new Date().toISOString(),
+      submittedVia: 'native_app',
+    };
+
+    await prisma.guestStay.update({
+      where: { id: stay.id },
+      data: {
+        preCheckinCompleted: true,
+        pmsData: { ...((stay.pmsData as object) || {}), nativePreCheckin: formData },
+      },
+    });
+
+    // Also update guest profile with the collected data
+    await prisma.guestAccount.update({
+      where: { id: guestId },
+      data: {
+        ...(firstName ? { firstName } : {}),
+        ...(lastName ? { lastName } : {}),
+        ...(phone ? { phone } : {}),
+      },
+    });
+
+    res.json({ success: true, data: { message: 'Pre-check-in submitted' } });
+  } catch (err) {
+    next(err);
+  }
+}
