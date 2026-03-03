@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import * as SecureStore from 'expo-secure-store';
 import { getTasks, updateTaskStatus, assignTaskToMe } from '../../../src/api/staffApi';
 import { useAuthStore } from '../../../src/stores/authStore';
 import { CreateTaskModal } from '../../../src/components/CreateTaskModal';
@@ -61,7 +61,6 @@ export default function TasksScreen() {
   // SSE real-time
   useEffect(() => {
     const connect = async () => {
-      const { default: SecureStore } = await import('expo-secure-store');
       const token = await SecureStore.getItemAsync('staff_access_token');
       if (!token) return;
 
@@ -138,7 +137,7 @@ export default function TasksScreen() {
     const isMine = task.assignedTo?.id === staff?.id;
 
     return (
-      <Animated.View entering={FadeInDown.duration(250).delay(index * 40)}>
+      <View>
         <TouchableOpacity
           style={[styles.card, isNew && styles.cardNew]}
           onPress={() => router.push(`/(staff)/tasks/${task.taskType}/${task.id}`)}
@@ -199,7 +198,7 @@ export default function TasksScreen() {
             </View>
           </View>
         </TouchableOpacity>
-      </Animated.View>
+      </View>
     );
   };
 
