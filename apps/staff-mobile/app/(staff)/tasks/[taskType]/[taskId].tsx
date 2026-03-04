@@ -9,7 +9,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialIcons } from '@expo/vector-icons';
 import {
   getTasks, updateTaskStatus, updateChecklist,
-  addComment, getComments, assignTaskToMe,
+  addComment, getComments, assignTaskToMe, updateRoomStatus,
 } from '../../../../src/api/staffApi';
 import { useAuthStore } from '../../../../src/stores/authStore';
 import {
@@ -79,6 +79,15 @@ export default function TaskDetailScreen() {
       setCommentText('');
       refetchComments();
     },
+  });
+
+  const roomStatusMutation = useMutation({
+    mutationFn: (status: string) => updateRoomStatus(task?.roomId, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      Alert.alert('Done', 'Room status updated');
+    },
+    onError: () => Alert.alert('Error', 'Failed to update room status'),
   });
 
   const handleStatusChange = () => {
@@ -175,6 +184,22 @@ export default function TaskDetailScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>NOTE</Text>
             <Text style={styles.descText}>{task.description}</Text>
+          </View>
+        )}
+
+        {/* Room Status (for housekeeping tasks with roomId) */}
+        {task.roomId && task.department === 'HOUSEKEEPING' && task.status === 'IN_PROGRESS' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>ROOM STATUS</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+              <TouchableOpacity
+                style={[styles.roomBtn, { backgroundColor: 'rgba(59,130,246,0.15)', borderColor: 'rgba(59,130,246,0.3)' }]}
+                onPress={() => roomStatusMutation.mutate('CLEANED')}
+                disabled={roomStatusMutation.isPending}
+              >
+                <Text style={{ color: '#3B82F6', fontWeight: '700', fontSize: 13 }}>✓ Mark Cleaned</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
 
@@ -372,6 +397,10 @@ const styles = StyleSheet.create({
   holdCancelText: { fontSize: 14, color: colors.textSecondary },
   holdConfirm: { paddingHorizontal: spacing.lg, paddingVertical: 8, backgroundColor: colors.warning, borderRadius: radius.md },
   holdConfirmText: { fontSize: 14, fontWeight: '700', color: colors.white },
+  roomBtn: {
+    paddingHorizontal: spacing.lg, paddingVertical: 12,
+    borderRadius: radius.xl, borderWidth: 1.5,
+  },
 
   actions: {
     flexDirection: 'row', gap: spacing.md, marginBottom: spacing.lg,

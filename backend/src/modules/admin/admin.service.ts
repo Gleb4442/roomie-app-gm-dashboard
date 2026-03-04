@@ -516,21 +516,42 @@ export const adminTmsService = {
   },
 
   async upsert(hotelId: string, data: {
+    mode?: string;
     provider: string;
     credentials: object;
     enabled?: boolean;
     categoryMapping?: object;
+    webhookSecret?: string;
+    outgoingWebhookUrl?: string;
+    pollingEnabled?: boolean;
+    pollingIntervalMs?: number;
   }) {
+    const { mode, provider, credentials, enabled, categoryMapping, webhookSecret, outgoingWebhookUrl, pollingEnabled, pollingIntervalMs } = data;
     return prisma.hotelTMSConfig.upsert({
       where: { hotelId },
       create: {
         hotelId,
-        provider: data.provider,
-        credentials: data.credentials,
-        enabled: data.enabled ?? false,
-        categoryMapping: data.categoryMapping ?? {},
+        mode: mode ?? 'BUILT_IN',
+        provider,
+        credentials,
+        enabled: enabled ?? false,
+        categoryMapping: categoryMapping ?? {},
+        webhookSecret,
+        outgoingWebhookUrl,
+        pollingEnabled: pollingEnabled ?? false,
+        pollingIntervalMs: pollingIntervalMs ?? 30000,
       },
-      update: data,
+      update: {
+        mode,
+        provider,
+        credentials,
+        enabled,
+        categoryMapping,
+        webhookSecret,
+        outgoingWebhookUrl,
+        pollingEnabled,
+        pollingIntervalMs,
+      },
     });
   },
 

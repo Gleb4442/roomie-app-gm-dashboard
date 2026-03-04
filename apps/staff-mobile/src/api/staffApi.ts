@@ -84,3 +84,8 @@ export const createTask = (data: {
   assignedToId?: string;
   autoAssign?: boolean;
 }) => staffApi.post('/tasks', data);
+
+// Housekeeping — Rooms
+export const getMyRooms = () => staffApi.get('/rooms');
+export const updateRoomStatus = (roomId: string, status: string, notes?: string) =>
+  staffApi.patch(`/rooms/${roomId}/status`, { status, notes });

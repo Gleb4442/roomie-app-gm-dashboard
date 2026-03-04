@@ -52,6 +52,15 @@ export default function StaffLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="housekeeping"
+        options={{
+          title: 'Rooms',
+          tabBarIcon: ({ color, size }) => (
+            <MaterialIcons name="hotel" color={color} size={size} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
