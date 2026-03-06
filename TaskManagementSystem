@@ -1,0 +1,2717 @@
+# HotelMol Task Management System — Техническое задание
+
+> Версия: 1.0
+> Дата: Март 03 2026
+> Назначение: Полная спецификация системы управления задачами для Claude Code
+
+---
+
+## Содержание
+
+1. [Обзор системы](#1-обзор-системы)
+2. [Архитектура](#2-архитектура)
+3. [Модели данных](#3-модели-данных)
+4. [Роли, доступы, разрешения](#4-роли-доступы-разрешения)
+5. [Жизненный цикл задачи](#5-жизненный-цикл-задачи)
+6. [Маршрутизация и назначение задач](#6-маршрутизация-и-назначение-задач)
+7. [Перераспределение и эскалация](#7-перераспределение-и-эскалация)
+8. [Built-in TMS vs External TMS — адаптерный слой](#8-built-in-tms-vs-external-tms)
+9. [Внешние TMS-интеграции](#9-внешние-tms-интеграции)
+10. [Chat Flow и NLU-обработка](#10-chat-flow-и-nlu-обработка)
+11. [Guest App — интерфейс гостя](#11-guest-app)
+12. [Staff App — интерфейс сотрудника](#12-staff-app)
+13. [Dashboard — интерфейс менеджмента](#13-dashboard)
+14. [Real-time коммуникация](#14-real-time-коммуникация)
+15. [SLA-система](#15-sla-система)
+16. [Push-уведомления](#16-push-уведомления)
+17. [ETA-калькулятор](#17-eta-калькулятор)
+18. [API-спецификация](#18-api-спецификация)
+19. [Мультиязычность](#19-мультиязычность)
+20. [Edge Cases](#20-edge-cases)
+
+---
+
+## 1. Обзор системы
+
+### 1.1. Что это
+
+Модуль управления задачами (Task Management) в составе платформы HotelMol. Позволяет гостям создавать сервисные запросы через чат (текст/голос) или кнопки в приложении, а персоналу отеля — получать, выполнять и отслеживать эти запросы.
+
+### 1.2. Ключевые принципы
+
+- **Два режима работы:** Built-in TMS (собственная система) и External TMS (через API-коннекторы к Hotelkit, Flexkeeping и др.)
+- **Единый UX для гостя:** Независимо от режима работы TMS, гость видит одинаковый интерфейс и получает одинаковый уровень обратной связи
+- **Адаптерный паттерн:** Все внешние TMS скрыты за единым интерфейсом `ITMSAdapter`
+- **Graceful degradation:** Если внешняя TMS не поддерживает какую-то функцию (например, ETA или статус "in_progress"), система эмулирует её средствами built-in логики
+- **Persistence across shifts:** Задачи не теряются при смене персонала — цифровое хранилище вместо устных передач
+- **Real-time everywhere:** SSE/WebSocket для мгновенных обновлений всем участникам
+
+### 1.3. Четыре дефолтные категории сервисов
+
+Каждый отель при подключении получает четыре предустановленные категории. Они могут быть настроены (переименованы, отключены) и дополнены кастомными.
+
+| ID | Категория | department по умолчанию | defaultETA (мин) | Платная по умолчанию |
+|---|---|---|---|---|
+| `room_cleaning` | Уборка номера | housekeeping | 30 | Нет (первая в день), Да (доп.) |
+| `towels_amenities` | Полотенца / Amenities | housekeeping | 15 | Нет |
+| `minibar_restock` | Пополнение минибара | f_and_b / housekeeping | 20 | Зависит от позиции |
+| `late_checkout` | Late checkout / Early checkin | front_desk | — | Настраивается |
+
+Кастомные категории создаются через admin-панель: `maintenance`, `extra_bed`, `transfer`, `room_service`, `laundry` и т.д.
+
+---
+
+## 2. Архитектура
+
+### 2.1. Компоненты системы
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        GUEST LAYER                              │
+│  Guest App (Expo/RN)          Web Chat (iframe/widget)          │
+│    ├── ChatScreen               ├── ChatWidget                  │
+│    ├── OrdersScreen             └── OrderTracker                │
+│    └── ServiceButtons                                           │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │ REST + SSE
+┌───────────────────────────▼─────────────────────────────────────┐
+│                      API GATEWAY                                │
+│  HotelMol App-Backend (Express + Prisma + TS)                   │
+│    ├── TaskController          — CRUD операции                  │
+│    ├── TaskRouter              — маршрутизация задач            │
+│    ├── AssignmentService       — выбор исполнителя              │
+│    ├── SLAMonitor              — отслеживание дедлайнов         │
+│    ├── EscalationService       — автоэскалация                  │
+│    ├── ETACalculator           — расчёт времени                 │
+│    ├── TMSAdapterManager       — менеджер адаптеров             │
+│    ├── NotificationService     — push, in-app, SSE              │
+│    └── TaskEventBus            — внутренняя шина событий        │
+└──────┬──────────────┬───────────────┬───────────────────────────┘
+       │              │               │
+  ┌────▼────┐   ┌─────▼─────┐   ┌────▼──────────────────────┐
+  │ Roomie  │   │   Staff   │   │   TMS Adapter Layer       │
+  │Chat BE  │   │   App     │   │    ├── BuiltInAdapter     │
+  │(NLU +   │   │  (Expo)   │   │    ├── HotelkitAdapter    │
+  │ Dialog) │   │           │   │    ├── FlexkeepingAdapter  │
+  └─────────┘   └───────────┘   │    ├── HotSOSAdapter      │
+                                │    └── GenericWebhookAdapt │
+                                └────────────────────────────┘
+                                          │
+                                    ┌─────▼──────┐
+                                    │  External  │
+                                    │  TMS APIs  │
+                                    └────────────┘
+```
+
+### 2.2. Репозитории и ответственности
+
+| Репозиторий | Что делает в контексте Task Management |
+|---|---|
+| **HotelMol app-backend** (Express + Prisma + TS) | Task CRUD, маршрутизация, SLA, ETA, TMS-адаптеры, уведомления |
+| **roomie-backend** (Express + Sequelize + JS) | NLU-парсинг сообщений гостя, dialog manager, генерация ответов, вызов Task API |
+| **HotelMol mobile** (Expo) | Guest App: ChatScreen, OrdersScreen, ServiceButtons |
+| **Staff mobile** (Expo) — новый или расширение mobile | Staff App: TaskListScreen, TaskDetailScreen |
+| **roomie-dashboard** (React + Vite) | GM Dashboard: real-time task board, SLA мониторинг, аналитика |
+| **roomie-admin** (React + Vite) | Настройка категорий, SLA, TMS-коннекторов, ролей |
+
+### 2.3. Шина событий (TaskEventBus)
+
+Все изменения задач проходят через внутреннюю шину событий. Это единая точка, к которой подписываются все заинтересованные сервисы.
+
+```typescript
+// Типы событий
+enum TaskEvent {
+  TASK_CREATED       = 'task.created',
+  TASK_ASSIGNED      = 'task.assigned',
+  TASK_ACCEPTED      = 'task.accepted',
+  TASK_IN_PROGRESS   = 'task.in_progress',
+  TASK_COMPLETED     = 'task.completed',
+  TASK_CANCELLED     = 'task.cancelled',
+  TASK_ESCALATED     = 'task.escalated',
+  TASK_REASSIGNED    = 'task.reassigned',
+  TASK_RATED         = 'task.rated',
+  TASK_ETA_UPDATED   = 'task.eta_updated',
+  TASK_NOTE_ADDED    = 'task.note_added',
+  TASK_SLA_WARNING   = 'task.sla_warning',
+  TASK_SLA_BREACHED  = 'task.sla_breached',
+}
+
+// Подписчики
+TaskEventBus.on(TaskEvent.TASK_CREATED, [
+  NotificationService.notifyStaff,       // push сотруднику
+  SSEService.broadcastToGuest,           // обновление в чате гостя
+  SSEService.broadcastToDashboard,       // обновление дашборда
+  SLAMonitor.startTracking,              // запуск таймера SLA
+  TMSAdapterManager.syncToExternal,      // синхронизация с внешней TMS (если подключена)
+]);
+
+TaskEventBus.on(TaskEvent.TASK_COMPLETED, [
+  NotificationService.notifyGuest,       // push гостю
+  SSEService.broadcastToGuest,           // обновление в чате
+  SSEService.broadcastToDashboard,       // обновление дашборда
+  SLAMonitor.stopTracking,              // остановка таймера
+  RatingService.scheduleRatingRequest,   // запрос оценки через 2-5 мин
+  TMSAdapterManager.syncToExternal,      // синхронизация
+  AnalyticsService.recordCompletion,     // запись метрик
+]);
+```
+
+---
+
+## 3. Модели данных
+
+### 3.1. Task (Задача)
+
+```prisma
+model Task {
+  id              String        @id @default(uuid())
+  hotelId         String
+  hotel           Hotel         @relation(fields: [hotelId], references: [id])
+
+  // Источник
+  guestId         String?       // null если создана персоналом
+  guest           Guest?        @relation(fields: [guestId], references: [id])
+  roomNumber      String
+  source          TaskSource    // CHAT, VOICE, BUTTON, STAFF, EXTERNAL
+
+  // Категория и детали
+  categoryId      String
+  category        TaskCategory  @relation(fields: [categoryId], references: [id])
+  departmentId    String
+  department      Department    @relation(fields: [departmentId], references: [id])
+  title           String        // Человекочитаемое описание: "Полотенца × 2 (банные)"
+  details         Json          // Структурированные данные запроса
+  // Пример details для towels: { type: "bath", quantity: 2 }
+  // Пример details для cleaning: { type: "full", preferredTime: "14:00" }
+  // Пример details для minibar: { items: [{ posId: "...", name: "Evian", qty: 2, price: 150 }] }
+  // Пример details для late_checkout: { requestedTime: "16:00", approvedTime: "14:00", cost: 500 }
+
+  // Статус
+  status          TaskStatus    @default(CREATED)
+  priority        TaskPriority  @default(NORMAL)
+
+  // Назначение
+  assigneeId      String?       // Конкретный сотрудник
+  assignee        Staff?        @relation("assigned", fields: [assigneeId], references: [id])
+  assigneeGroupId String?       // Или группа (первый свободный берёт)
+  assigneeGroup   StaffGroup?   @relation(fields: [assigneeGroupId], references: [id])
+
+  // Временные метки
+  createdAt       DateTime      @default(now())
+  assignedAt      DateTime?
+  acceptedAt      DateTime?
+  startedAt       DateTime?     // in_progress
+  completedAt     DateTime?
+  cancelledAt     DateTime?
+  estimatedAt     DateTime?     // расчётное время завершения
+
+  // ETA
+  etaMinutes      Int?          // текущий ETA в минутах
+  etaUpdatedAt    DateTime?
+
+  // SLA
+  slaDeadline     DateTime?     // когда SLA будет нарушен
+  slaBreached     Boolean       @default(false)
+  escalationLevel Int           @default(0) // 0 = нет, 1 = супервайзор, 2 = менеджер, 3 = GM
+
+  // Финансы
+  isBillable      Boolean       @default(false)
+  cost            Decimal?      @db.Decimal(10, 2)
+  currency        String?       @default("UAH")
+  billedToRoom    Boolean       @default(false)
+
+  // Внешняя TMS
+  externalTmsId   String?       // ID задачи во внешней системе
+  externalTmsType String?       // "hotelkit", "flexkeeping", "hotsos"
+  syncStatus      SyncStatus    @default(NOT_SYNCED) // NOT_SYNCED, SYNCED, SYNC_ERROR, LOCAL_ONLY
+
+  // Оценка
+  rating          Int?          // 1-5
+  ratingComment   String?
+  ratedAt         DateTime?
+
+  // Связи
+  notes           TaskNote[]
+  statusHistory   TaskStatusChange[]
+  photos          TaskPhoto[]
+  chatMessageId   String?       // ID сообщения в чате, из которого создана задача
+
+  @@index([hotelId, status])
+  @@index([hotelId, departmentId, status])
+  @@index([assigneeId, status])
+  @@index([guestId])
+  @@index([externalTmsId])
+}
+
+enum TaskStatus {
+  CREATED         // Задача создана, ожидает назначения
+  ASSIGNED        // Назначена сотруднику/группе
+  ACCEPTED        // Сотрудник принял
+  IN_PROGRESS     // Сотрудник начал выполнение
+  COMPLETED       // Выполнена
+  CANCELLED       // Отменена (гостем или персоналом)
+  ON_HOLD         // На паузе (ожидание гостя, материалов и т.д.)
+  ESCALATED       // Эскалирована (SLA нарушен или ручная эскалация)
+}
+
+enum TaskPriority {
+  LOW             // Может подождать
+  NORMAL          // Стандартный
+  HIGH            // Приоритетный (VIP гость, повторный запрос)
+  URGENT          // Срочный (гость отметил как срочное, или авария)
+}
+
+enum TaskSource {
+  CHAT            // Текстовое сообщение в чате
+  VOICE           // Голосовое сообщение
+  BUTTON          // Кнопка в интерфейсе приложения
+  STAFF           // Создана персоналом
+  EXTERNAL        // Пришла из внешней TMS
+}
+
+enum SyncStatus {
+  NOT_SYNCED      // Нет внешней TMS или ещё не отправлено
+  SYNCED          // Успешно синхронизировано
+  SYNC_ERROR      // Ошибка синхронизации
+  LOCAL_ONLY      // Только в нашей системе (внешняя TMS не поддерживает)
+}
+```
+
+### 3.2. TaskCategory (Категория сервиса)
+
+```prisma
+model TaskCategory {
+  id              String    @id @default(uuid())
+  hotelId         String
+  hotel           Hotel     @relation(fields: [hotelId], references: [id])
+
+  slug            String    // "room_cleaning", "towels_amenities", "minibar_restock", "late_checkout", custom...
+  isDefault       Boolean   @default(false) // true для 4 дефолтных
+  isActive        Boolean   @default(true)
+
+  // Мультиязычные названия
+  names           Json      // { "en": "Room Cleaning", "uk": "Прибирання кімнати", "ru": "Уборка номера" }
+  descriptions    Json?     // { "en": "Full room cleaning service", ... }
+  icon            String    // emoji или название иконки: "bed", "towel", "minibar", "clock"
+
+  // Маршрутизация
+  defaultDepartmentId  String
+  defaultDepartment    Department @relation(fields: [defaultDepartmentId], references: [id])
+
+  // SLA настройки
+  defaultEtaMinutes    Int       @default(30)
+  slaMinutes           Int       @default(60) // максимальное время выполнения
+  slaWarningMinutes    Int       @default(45) // когда отправить предупреждение
+
+  // Финансы
+  defaultIsBillable    Boolean   @default(false)
+  defaultPrice         Decimal?  @db.Decimal(10, 2)
+  pricingRules         Json?     // Правила ценообразования (зависит от времени, типа номера и т.д.)
+
+  // Доступность
+  availableFrom        String?   // "07:00" — с какого времени доступна
+  availableTo          String?   // "23:00" — до какого времени
+  availableDays        Int[]     // [1,2,3,4,5,6,7] — дни недели (1=Пн)
+
+  // Уточняющие вопросы (для NLU / chat flow)
+  clarificationRules   Json?
+  // Пример:
+  // {
+  //   "towels_amenities": {
+  //     "fields": [
+  //       { "key": "type", "required": false, "default": "bath",
+  //         "options": ["bath", "hand", "beach"],
+  //         "prompt": { "en": "What type of towels?", "uk": "Які рушники?" },
+  //         "quickReplies": { "en": ["Bath", "Hand", "Beach"], "uk": ["Банні", "Для рук", "Пляжні"] }
+  //       },
+  //       { "key": "quantity", "required": false, "default": 2,
+  //         "prompt": { "en": "How many?", "uk": "Скільки?" },
+  //         "quickReplies": ["1", "2", "3", "Set"]
+  //       }
+  //     ]
+  //   }
+  // }
+
+  // Внешняя TMS
+  externalMappings     Json?     // Маппинг на категории внешней TMS
+  // { "hotelkit": { "categoryId": "abc123", "subcategoryId": "def456" } }
+
+  tasks           Task[]
+
+  @@unique([hotelId, slug])
+}
+```
+
+### 3.3. TaskStatusChange (История изменений статуса)
+
+```prisma
+model TaskStatusChange {
+  id          String      @id @default(uuid())
+  taskId      String
+  task        Task        @relation(fields: [taskId], references: [id])
+
+  fromStatus  TaskStatus?
+  toStatus    TaskStatus
+  changedById String?     // staffId или "system"
+  changedBy   Staff?      @relation(fields: [changedById], references: [id])
+  reason      String?     // Причина (для отмены, эскалации, переназначения)
+  timestamp   DateTime    @default(now())
+
+  // Для синхронизации
+  syncedToExternal  Boolean @default(false)
+
+  @@index([taskId])
+}
+```
+
+### 3.4. TaskNote (Заметки к задаче)
+
+```prisma
+model TaskNote {
+  id          String    @id @default(uuid())
+  taskId      String
+  task        Task      @relation(fields: [taskId], references: [id])
+
+  authorId    String    // staffId или guestId
+  authorType  String    // "staff" | "guest" | "system"
+  content     String
+  isInternal  Boolean   @default(false) // true = видно только персоналу
+  createdAt   DateTime  @default(now())
+
+  @@index([taskId])
+}
+```
+
+### 3.5. TaskPhoto (Фотоотчёты)
+
+```prisma
+model TaskPhoto {
+  id          String    @id @default(uuid())
+  taskId      String
+  task        Task      @relation(fields: [taskId], references: [id])
+
+  url         String
+  type        String    // "before" | "after" | "issue"
+  uploadedById String
+  uploadedBy  Staff     @relation(fields: [uploadedById], references: [id])
+  uploadedAt  DateTime  @default(now())
+  aiAnalysis  Json?     // Результат AI-анализа фото (качество уборки и т.д.)
+
+  @@index([taskId])
+}
+```
+
+### 3.6. Department (Департамент)
+
+```prisma
+model Department {
+  id          String    @id @default(uuid())
+  hotelId     String
+  hotel       Hotel     @relation(fields: [hotelId], references: [id])
+
+  slug        String    // "housekeeping", "front_desk", "f_and_b", "maintenance", "concierge"
+  names       Json      // { "en": "Housekeeping", "uk": "Господарча служба" }
+  isActive    Boolean   @default(true)
+
+  staff       Staff[]   @relation("departmentStaff")
+  categories  TaskCategory[]
+  tasks       Task[]
+
+  @@unique([hotelId, slug])
+}
+```
+
+### 3.7. StaffGroup (Группа сотрудников)
+
+```prisma
+model StaffGroup {
+  id          String    @id @default(uuid())
+  hotelId     String
+  hotel       Hotel     @relation(fields: [hotelId], references: [id])
+
+  name        String    // "3rd Floor Housekeeping", "Night Shift Front Desk"
+  type        GroupType // FLOOR, SHIFT, SKILL, CUSTOM
+
+  departmentId String
+  department  Department @relation(fields: [departmentId], references: [id])
+
+  // Критерии группы
+  floors      Int[]     // [3, 4] — этажи, которые обслуживает группа
+  shiftStart  String?   // "07:00"
+  shiftEnd    String?   // "15:00"
+  skills      String[]  // ["deep_cleaning", "vip_service"]
+
+  members     Staff[]   @relation("groupMembers")
+  tasks       Task[]
+
+  @@index([hotelId, departmentId])
+}
+
+enum GroupType {
+  FLOOR       // Группа по этажам
+  SHIFT       // Группа по сменам
+  SKILL       // Группа по навыкам
+  CUSTOM      // Произвольная группа
+}
+```
+
+---
+
+## 4. Роли, доступы, разрешения
+
+### 4.1. Роли в системе
+
+| Роль | Код | Описание |
+|---|---|---|
+| Гость | `guest` | Создаёт запросы, отслеживает статус, оценивает |
+| Горничная / Исполнитель | `staff_member` | Получает задачи, выполняет, отчитывается |
+| Супервайзор | `supervisor` | Видит задачи своего отдела, может переназначать |
+| Менеджер смены | `shift_manager` | Видит все задачи смены, полный контроль |
+| Duty Manager | `duty_manager` | Видит всё по отелю, может эскалировать |
+| GM (General Manager) | `gm` | Полный доступ + аналитика + настройки |
+| Admin (HotelMol) | `admin` | Системный администратор, настройка отеля |
+
+### 4.2. Матрица разрешений
+
+```typescript
+const PERMISSIONS = {
+  // Задачи
+  'task.create':           ['guest', 'staff_member', 'supervisor', 'shift_manager', 'duty_manager', 'gm', 'admin'],
+  'task.view.own':         ['guest', 'staff_member'],              // Свои задачи
+  'task.view.department':  ['supervisor', 'shift_manager'],         // Задачи своего департамента
+  'task.view.all':         ['duty_manager', 'gm', 'admin'],        // Все задачи отеля
+  'task.accept':           ['staff_member'],                        // Принять задачу
+  'task.decline':          ['staff_member'],                        // Отклонить (с причиной)
+  'task.complete':         ['staff_member', 'supervisor'],          // Отметить выполненной
+  'task.cancel':           ['guest', 'supervisor', 'shift_manager', 'duty_manager', 'gm'],
+  'task.reassign':         ['supervisor', 'shift_manager', 'duty_manager', 'gm'],
+  'task.escalate':         ['staff_member', 'supervisor', 'shift_manager'],
+  'task.change_priority':  ['supervisor', 'shift_manager', 'duty_manager', 'gm'],
+  'task.add_note':         ['staff_member', 'supervisor', 'shift_manager', 'duty_manager', 'gm'],
+  'task.add_note.internal':['staff_member', 'supervisor', 'shift_manager', 'duty_manager', 'gm'],
+  'task.add_photo':        ['staff_member', 'supervisor'],
+  'task.view_rating':      ['supervisor', 'shift_manager', 'duty_manager', 'gm'],
+
+  // Категории
+  'category.manage':       ['gm', 'admin'],
+
+  // SLA
+  'sla.configure':         ['gm', 'admin'],
+  'sla.view_breaches':     ['supervisor', 'shift_manager', 'duty_manager', 'gm'],
+
+  // Аналитика
+  'analytics.department':  ['supervisor', 'shift_manager'],
+  'analytics.hotel':       ['duty_manager', 'gm'],
+  'analytics.chain':       ['admin'],  // Мультиотельный
+
+  // Настройки
+  'settings.departments':  ['gm', 'admin'],
+  'settings.staff_groups': ['gm', 'admin'],
+  'settings.tms_connector':['gm', 'admin'],
+  'settings.roles':        ['admin'],
+};
+```
+
+### 4.3. Контекст видимости
+
+Каждый пользователь видит данные в рамках своего контекста:
+
+```typescript
+interface VisibilityContext {
+  hotelId: string;
+  departmentIds?: string[];     // Для supervisor — только свои департаменты
+  floors?: number[];             // Для floor-based группировки
+  shiftId?: string;             // Для shift_manager — только текущая смена
+  staffGroupIds?: string[];     // Группы, в которых состоит сотрудник
+}
+
+// Пример: Supervisor housekeeping 3-го этажа видит:
+// - Все задачи с departmentId = "housekeeping" И (room на 3 этаже ИЛИ назначены его группе)
+```
+
+---
+
+## 5. Жизненный цикл задачи
+
+### 5.1. State Machine
+
+```
+                         ┌──────────────────────────┐
+                         │                          │
+                         ▼                          │
+┌──────────┐    ┌──────────┐    ┌──────────┐       │
+│          │    │          │    │          │       │
+│ CREATED  ├───►│ ASSIGNED ├───►│ ACCEPTED │       │
+│          │    │          │    │          │       │
+└────┬─────┘    └────┬─────┘    └────┬─────┘       │
+     │               │               │              │
+     │          decline+reassign      │              │
+     │               │               │              │
+     │               │          ┌────▼──────┐       │
+     │               │          │           │       │
+     │               │          │IN_PROGRESS│       │
+     │               │          │           │       │
+     │               │          └────┬──┬───┘       │
+     │               │               │  │           │
+     │               │               │  │ on_hold   │
+     │               │               │  │           │
+     │               │               │  ▼           │
+     │               │               │ ┌────────┐   │
+     │               │               │ │ON_HOLD ├───┘
+     │               │               │ └────────┘
+     │               │               │   resume → IN_PROGRESS
+     │               │               │
+     │               │          ┌────▼─────┐
+     │               │          │          │
+     │               └─────────►│COMPLETED │
+     │                          │          │
+     │                          └──────────┘
+     │
+     │    (из любого статуса кроме COMPLETED)
+     │
+     ├──────────────────────────────────────┐
+     │                                      │
+┌────▼─────┐                          ┌─────▼────┐
+│          │                          │          │
+│CANCELLED │                          │ESCALATED │
+│          │                          │          │
+└──────────┘                          └──────────┘
+                                        │
+                                        │ reassign → ASSIGNED
+                                        └──────────────────►
+```
+
+### 5.2. Допустимые переходы
+
+```typescript
+const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  CREATED:      ['ASSIGNED', 'CANCELLED', 'ESCALATED'],
+  ASSIGNED:     ['ACCEPTED', 'CANCELLED', 'ESCALATED', 'ASSIGNED'], // последнее = переназначение
+  ACCEPTED:     ['IN_PROGRESS', 'CANCELLED', 'ESCALATED', 'ASSIGNED'], // ASSIGNED = отклонил
+  IN_PROGRESS:  ['COMPLETED', 'ON_HOLD', 'CANCELLED', 'ESCALATED'],
+  ON_HOLD:      ['IN_PROGRESS', 'CANCELLED', 'ESCALATED'],
+  COMPLETED:    [], // Финальный статус. Только reopening через спец. action.
+  CANCELLED:    [], // Финальный статус.
+  ESCALATED:    ['ASSIGNED'], // После эскалации — переназначение
+};
+```
+
+### 5.3. Что происходит при каждом переходе
+
+| Переход | Триггер | Действия |
+|---|---|---|
+| `→ CREATED` | Гость подтвердил запрос в чате / кнопка | Создать Task, запустить TaskRouter, SLAMonitor.start, отправить карточку в чат |
+| `→ ASSIGNED` | TaskRouter нашёл исполнителя | Push сотруднику, обновить чат гостя ("Запрос передан в housekeeping"), SSE → dashboard |
+| `→ ACCEPTED` | Сотрудник нажал "Принять" | Обновить чат гостя, SSE → dashboard, пересчитать ETA |
+| `→ IN_PROGRESS` | Сотрудник нажал "Начать" | Обновить чат ("Сотрудник в пути"), SSE → dashboard, пересчитать ETA |
+| `→ COMPLETED` | Сотрудник нажал "Готово" (+ опц. фото) | Push гостю, обновить чат, SLAMonitor.stop, запланировать запрос рейтинга, SSE → dashboard, analytics |
+| `→ ON_HOLD` | Сотрудник поставил на паузу (с причиной) | Обновить чат ("Ожидание: [причина]"), SLA timer pause, SSE → dashboard |
+| `→ CANCELLED` | Гость / менеджер отменил | Обновить чат, SLAMonitor.stop, push сотруднику если был назначен, SSE → dashboard |
+| `→ ESCALATED` | Авто (SLA) или ручная эскалация | Push супервайзору/менеджеру, обновить чат ("Извините за задержку"), увеличить priority, SSE → dashboard |
+
+---
+
+## 6. Маршрутизация и назначение задач
+
+### 6.1. TaskRouter — алгоритм маршрутизации
+
+```typescript
+class TaskRouter {
+  /**
+   * Основной метод маршрутизации.
+   * Вызывается сразу после создания задачи.
+   */
+  async route(task: Task): Promise<RoutingResult> {
+    // 1. Определить режим TMS
+    const tmsMode = await this.getTMSMode(task.hotelId);
+
+    if (tmsMode === 'external') {
+      // Внешняя TMS — отправляем через адаптер
+      return this.routeToExternalTMS(task);
+    }
+
+    // 2. Built-in TMS — полная маршрутизация
+    return this.routeBuiltIn(task);
+  }
+
+  private async routeBuiltIn(task: Task): Promise<RoutingResult> {
+    // Шаг 1: Определить департамент (из категории или переопределения)
+    const department = await this.resolveDepartment(task);
+
+    // Шаг 2: Найти подходящую группу сотрудников
+    const group = await this.resolveGroup(task, department);
+
+    // Шаг 3: Найти конкретного исполнителя
+    const assignee = await this.resolveAssignee(task, department, group);
+
+    if (assignee) {
+      // Назначить конкретному сотруднику
+      return { type: 'direct', assigneeId: assignee.id };
+    } else if (group) {
+      // Назначить группе (первый свободный берёт)
+      return { type: 'group', groupId: group.id };
+    } else {
+      // Никого нет — эскалация
+      return { type: 'escalate', reason: 'no_available_staff' };
+    }
+  }
+}
+```
+
+### 6.2. AssignmentService — выбор конкретного исполнителя
+
+```typescript
+class AssignmentService {
+  /**
+   * Трёхуровневый алгоритм выбора исполнителя:
+   * Level 1: Rule-based фильтрация
+   * Level 2: Scoring (опционально)
+   * Level 3: Fallback
+   */
+  async findBestAssignee(
+    task: Task,
+    department: Department,
+    group?: StaffGroup
+  ): Promise<Staff | null> {
+
+    // ═══ LEVEL 1: Rule-based фильтрация ═══
+
+    let candidates = await this.getAvailableStaff(department.id);
+
+    // 1a. Фильтр по смене: кто сейчас на работе?
+    candidates = candidates.filter(s => this.isOnShift(s));
+
+    // 1b. Фильтр по этажу/зоне: кто обслуживает нужный этаж?
+    const floor = this.extractFloor(task.roomNumber);
+    const floorStaff = candidates.filter(s => this.servesFloor(s, floor));
+    if (floorStaff.length > 0) {
+      candidates = floorStaff; // Предпочитаем сотрудников этажа
+    }
+
+    // 1c. Фильтр по загрузке: кто не перегружен?
+    candidates = candidates.filter(s =>
+      this.getCurrentLoad(s) < this.getMaxLoad(s)
+    );
+
+    // 1d. Фильтр по навыкам (если категория требует)
+    if (task.category.requiredSkills?.length) {
+      candidates = candidates.filter(s =>
+        task.category.requiredSkills.every(skill => s.skills.includes(skill))
+      );
+    }
+
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    // ═══ LEVEL 2: Scoring (AI-assisted, опционально) ═══
+
+    const scored = candidates.map(staff => ({
+      staff,
+      score: this.calculateScore(staff, task),
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored[0].staff;
+  }
+
+  /**
+   * Скоринг кандидата. Возвращает число 0–100.
+   */
+  private calculateScore(staff: Staff, task: Task): number {
+    let score = 50; // Базовый
+
+    // Текущая загрузка (меньше = лучше)
+    const loadRatio = this.getCurrentLoad(staff) / this.getMaxLoad(staff);
+    score += (1 - loadRatio) * 20; // до +20
+
+    // Среднее время выполнения аналогичных задач (быстрее = лучше)
+    const avgTime = this.getAvgCompletionTime(staff, task.categoryId);
+    const categoryAvg = task.category.defaultEtaMinutes;
+    if (avgTime && avgTime < categoryAvg) {
+      score += 15; // Быстрее среднего
+    }
+
+    // Рейтинг качества (выше = лучше)
+    const qualityRating = this.getQualityRating(staff);
+    score += (qualityRating / 5) * 15; // до +15
+
+    // VIP-бонус: если гость VIP и сотрудник имеет VIP-навык
+    if (task.guest?.isVip && staff.skills.includes('vip_service')) {
+      score += 10;
+    }
+
+    // Proximity: если известна текущая позиция сотрудника
+    const distance = this.estimateDistance(staff.currentFloor, this.extractFloor(task.roomNumber));
+    score -= distance * 2; // Штраф за расстояние
+
+    return Math.max(0, Math.min(100, score));
+  }
+}
+```
+
+### 6.3. Режим "Group Assignment" (Первый свободный)
+
+Когда конкретного исполнителя выбрать невозможно (все примерно равны или настройка отеля предпочитает "pull"-модель):
+
+```typescript
+// Задача назначается группе, а не конкретному сотруднику
+// Все члены группы получают push-уведомление
+// Первый, кто нажал "Принять" — становится исполнителем
+// Остальные видят, что задача уже взята
+
+async function assignToGroup(task: Task, group: StaffGroup): Promise<void> {
+  task.assigneeGroupId = group.id;
+  task.assigneeId = null;
+  task.status = TaskStatus.ASSIGNED;
+
+  // Уведомить всех членов группы
+  const members = await getActiveGroupMembers(group.id);
+  await Promise.all(
+    members.map(member =>
+      NotificationService.push(member.id, {
+        title: `Новый запрос: ${task.title}`,
+        body: `Номер ${task.roomNumber} • ${task.category.name}`,
+        data: { taskId: task.id, action: 'accept_task' },
+      })
+    )
+  );
+}
+
+// Когда сотрудник принимает задачу из группового назначения
+async function acceptGroupTask(taskId: string, staffId: string): Promise<void> {
+  // Атомарная операция — предотвращаем race condition
+  const updated = await prisma.task.updateMany({
+    where: {
+      id: taskId,
+      status: TaskStatus.ASSIGNED,
+      assigneeId: null, // Ещё никто не взял
+    },
+    data: {
+      assigneeId: staffId,
+      status: TaskStatus.ACCEPTED,
+      acceptedAt: new Date(),
+    },
+  });
+
+  if (updated.count === 0) {
+    throw new TaskAlreadyAcceptedError();
+  }
+
+  // Уведомить остальных членов группы, что задача взята
+  await NotificationService.dismissForGroup(taskId);
+}
+```
+
+---
+
+## 7. Перераспределение и эскалация
+
+### 7.1. Автоматическое перераспределение
+
+```typescript
+// Сценарии автоматического перераспределения:
+
+// 1. Сотрудник отклонил задачу
+async function handleTaskDeclined(taskId: string, staffId: string, reason: string): Promise<void> {
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+
+  // Записать причину отклонения
+  await TaskNote.create({
+    taskId,
+    authorId: staffId,
+    authorType: 'staff',
+    content: `Отклонено: ${reason}`,
+    isInternal: true,
+  });
+
+  // Исключить этого сотрудника из кандидатов и переназначить
+  const newAssignee = await AssignmentService.findBestAssignee(task, {
+    excludeStaffIds: [staffId],
+  });
+
+  if (newAssignee) {
+    await reassignTask(task, newAssignee);
+  } else {
+    await escalateTask(task, 'no_available_staff_after_decline');
+  }
+}
+
+// 2. Сотрудник завершил смену с незакрытыми задачами
+async function handleShiftEnd(staffId: string): Promise<void> {
+  const openTasks = await prisma.task.findMany({
+    where: {
+      assigneeId: staffId,
+      status: { in: ['ASSIGNED', 'ACCEPTED', 'IN_PROGRESS'] },
+    },
+  });
+
+  for (const task of openTasks) {
+    if (task.status === 'IN_PROGRESS') {
+      // В процессе — уведомить супервайзора для решения
+      await escalateTask(task, 'assignee_shift_ended_during_execution');
+    } else {
+      // Назначена/принята но не начата — переназначить автоматически
+      await TaskRouter.route(task); // Повторная маршрутизация
+    }
+  }
+}
+
+// 3. Сотрудник стал недоступен (offline > 15 мин)
+async function handleStaffOffline(staffId: string): Promise<void> {
+  // Аналогичная логика — переназначить все открытые задачи
+}
+```
+
+### 7.2. Автоэскалация по SLA
+
+```typescript
+class SLAMonitor {
+  /**
+   * Запускается при создании задачи.
+   * Планирует серию проверок.
+   */
+  async startTracking(task: Task): Promise<void> {
+    const sla = await this.getSLAConfig(task.categoryId, task.hotelId);
+
+    // Уровень 0: Не принята > sla.acceptanceTimeout (default: 5 мин)
+    await this.scheduleCheck(task.id, 'acceptance', sla.acceptanceTimeout);
+
+    // Уровень 1: Warning (default: 75% от SLA)
+    await this.scheduleCheck(task.id, 'sla_warning', sla.warningMinutes);
+
+    // Уровень 2: SLA Breach
+    await this.scheduleCheck(task.id, 'sla_breach', sla.slaMinutes);
+  }
+
+  async handleCheck(taskId: string, checkType: string): Promise<void> {
+    const task = await prisma.task.findUnique({ where: { id: taskId } });
+
+    // Задача уже завершена/отменена — ничего не делаем
+    if (['COMPLETED', 'CANCELLED'].includes(task.status)) return;
+
+    switch (checkType) {
+      case 'acceptance':
+        // Задача не принята вовремя
+        if (task.status === 'ASSIGNED' || task.status === 'CREATED') {
+          // Повторное уведомление исполнителю
+          await NotificationService.pushUrgent(task.assigneeId, {
+            title: '⚠️ Непринятый запрос',
+            body: `${task.title} — ожидает ${this.minutesSince(task.createdAt)} мин`,
+          });
+          // Алерт супервайзору
+          await this.alertSupervisor(task, 'task_not_accepted');
+          // Запланировать переназначение через ещё 5 мин
+          await this.scheduleCheck(task.id, 'force_reassign', 5);
+        }
+        break;
+
+      case 'force_reassign':
+        if (task.status === 'ASSIGNED' && !task.acceptedAt) {
+          await TaskRouter.route(task); // Переназначить другому
+          await this.alertShiftManager(task, 'task_force_reassigned');
+        }
+        break;
+
+      case 'sla_warning':
+        if (!['COMPLETED', 'CANCELLED'].includes(task.status)) {
+          // Алерт супервайзору и менеджеру
+          await this.alertSupervisor(task, 'sla_warning');
+          // Обновить ETA гостю
+          await ETACalculator.recalculate(task);
+        }
+        break;
+
+      case 'sla_breach':
+        if (!['COMPLETED', 'CANCELLED'].includes(task.status)) {
+          // SLA нарушен
+          await prisma.task.update({
+            where: { id: taskId },
+            data: {
+              slaBreached: true,
+              escalationLevel: Math.min(task.escalationLevel + 1, 3),
+            },
+          });
+          // Сообщение гостю
+          await SSEService.sendToGuest(task.guestId, {
+            type: 'task_delayed',
+            taskId,
+            message: getLocalizedMessage('task_delayed_apology', task.guest.language),
+          });
+          // Алерт GM
+          await this.alertGM(task, 'sla_breached');
+          // Поднять приоритет
+          await prisma.task.update({
+            where: { id: taskId },
+            data: { priority: 'URGENT' },
+          });
+          // Логировать для аналитики
+          await AnalyticsService.recordSLABreach(task);
+        }
+        break;
+    }
+  }
+}
+```
+
+### 7.3. Ручная эскалация
+
+```typescript
+// Сотрудник может эскалировать задачу вручную
+// (например: нет ключа от номера, нужно разрешение менеджера, нестандартная ситуация)
+
+async function manualEscalate(
+  taskId: string,
+  staffId: string,
+  reason: string,
+  targetRole?: string // 'supervisor' | 'shift_manager' | 'duty_manager'
+): Promise<void> {
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+
+  // По умолчанию эскалируем на уровень выше
+  const targetLevel = targetRole
+    ? ROLE_ESCALATION_LEVEL[targetRole]
+    : task.escalationLevel + 1;
+
+  await prisma.task.update({
+    where: { id: taskId },
+    data: {
+      status: 'ESCALATED',
+      escalationLevel: targetLevel,
+    },
+  });
+
+  await TaskNote.create({
+    taskId,
+    authorId: staffId,
+    authorType: 'staff',
+    content: `Эскалация: ${reason}`,
+    isInternal: true,
+  });
+
+  // Уведомить целевую роль
+  const targets = await getStaffByRole(task.hotelId, targetRole || ESCALATION_ROLES[targetLevel]);
+  await NotificationService.pushToMany(targets, {
+    title: `🔺 Эскалация: ${task.title}`,
+    body: `Номер ${task.roomNumber} • Причина: ${reason}`,
+    data: { taskId, action: 'review_escalation' },
+    priority: 'high',
+  });
+}
+```
+
+---
+
+## 8. Built-in TMS vs External TMS — адаптерный слой
+
+### 8.1. Концепция двух режимов
+
+Каждый отель при настройке выбирает один из двух режимов:
+
+| Режим | Описание | Когда используется |
+|---|---|---|
+| **Built-in** | Полная собственная TMS HotelMol | Отель не имеет TMS или хочет перейти на нашу |
+| **External** | HotelMol как фронтенд + коннектор к внешней TMS | Отель уже использует Hotelkit/Flexkeeping/etc. |
+| **Hybrid** | Built-in + sync отдельных категорий во внешнюю TMS | Переходный период или частичная интеграция |
+
+### 8.2. Интерфейс ITMSAdapter
+
+Все TMS (включая built-in) реализуют единый интерфейс:
+
+```typescript
+interface ITMSAdapter {
+  // ═══ Идентификация ═══
+  readonly name: string;           // "builtin", "hotelkit", "flexkeeping", "hotsos"
+  readonly version: string;
+
+  // ═══ Capabilities — что поддерживает эта TMS ═══
+  getCapabilities(): TMSCapabilities;
+
+  // ═══ Жизненный цикл задачи ═══
+  createTask(task: TaskCreatePayload): Promise<TMSTaskResult>;
+  updateTaskStatus(externalId: string, status: TMSStatus): Promise<TMSTaskResult>;
+  cancelTask(externalId: string, reason?: string): Promise<TMSTaskResult>;
+  getTask(externalId: string): Promise<TMSTaskData | null>;
+
+  // ═══ Назначение ═══
+  assignTask(externalId: string, assigneeExternalId: string): Promise<TMSTaskResult>;
+  getAvailableStaff(departmentExternalId: string): Promise<TMSStaffMember[]>;
+
+  // ═══ Синхронизация ═══
+  syncTaskStatus(externalId: string): Promise<TMSTaskData>;  // Pull текущий статус
+  registerWebhook?(url: string, events: string[]): Promise<void>;  // Push обновления
+
+  // ═══ Маппинг ═══
+  mapCategory(internalCategorySlug: string): string | null;    // Наша категория → их
+  mapStatus(internalStatus: TaskStatus): string | null;        // Наш статус → их
+  mapStatusReverse(externalStatus: string): TaskStatus | null; // Их статус → наш
+  mapPriority(internalPriority: TaskPriority): string | null;
+  mapDepartment(internalDeptSlug: string): string | null;
+
+  // ═══ Health ═══
+  healthCheck(): Promise<{ ok: boolean; latency: number; error?: string }>;
+}
+
+interface TMSCapabilities {
+  // Статусы, которые поддерживает TMS
+  supportedStatuses: string[];
+  // Есть ли в их системе наш набор статусов?
+  hasAcceptedStatus: boolean;      // Есть ли "принято" (между "назначено" и "в процессе")?
+  hasInProgressStatus: boolean;    // Есть ли "в процессе"?
+  hasOnHoldStatus: boolean;        // Есть ли "на паузе"?
+
+  // Функции
+  supportsAssignment: boolean;     // Можно ли назначать конкретному сотруднику через API?
+  supportsGroupAssignment: boolean;// Можно ли назначить группе?
+  supportsReassignment: boolean;   // Можно ли переназначить?
+  supportsEscalation: boolean;     // Есть ли встроенная эскалация?
+  supportsPriority: boolean;       // Можно ли передать приоритет?
+  supportsNotes: boolean;          // Можно ли добавлять заметки?
+  supportsPhotos: boolean;         // Можно ли прикреплять фото?
+  supportsETA: boolean;            // Возвращает ли TMS ETA?
+  supportsRating: boolean;         // Есть ли система оценок?
+  supportsBilling: boolean;        // Можно ли передать стоимость?
+  supportsCustomFields: boolean;   // Можно ли передать кастомные поля?
+
+  // Real-time
+  supportsWebhooks: boolean;       // Может ли TMS слать вебхуки?
+  supportsPolling: boolean;        // Нужен ли polling?
+  pollingIntervalMs?: number;      // Интервал polling (если нужен)
+
+  // Ограничения
+  maxTitleLength?: number;         // Макс. длина названия задачи
+  maxNoteLength?: number;          // Макс. длина заметки
+  maxPhotosPerTask?: number;       // Макс. кол-во фото
+  rateLimitPerMinute?: number;     // Лимит запросов в минуту
+}
+```
+
+### 8.3. TMSAdapterManager — оркестратор адаптеров
+
+```typescript
+class TMSAdapterManager {
+  private adapters: Map<string, ITMSAdapter> = new Map();
+
+  /**
+   * Получить адаптер для конкретного отеля.
+   * Каждый отель может иметь свой адаптер (или built-in).
+   */
+  getAdapter(hotelId: string): ITMSAdapter {
+    const config = await HotelConfig.getTMSConfig(hotelId);
+    if (!config || config.mode === 'builtin') {
+      return this.adapters.get('builtin')!;
+    }
+    return this.adapters.get(config.tmsType)!;
+  }
+
+  /**
+   * Создать задачу с учётом возможностей TMS.
+   * Ключевая логика: что делать, если TMS не поддерживает нужную функцию.
+   */
+  async createTask(hotelId: string, task: TaskCreatePayload): Promise<Task> {
+    const adapter = this.getAdapter(hotelId);
+    const caps = adapter.getCapabilities();
+
+    // 1. Всегда создаём задачу в нашей базе (source of truth)
+    const localTask = await prisma.task.create({ data: task });
+
+    // 2. Отправляем во внешнюю TMS (если не built-in)
+    if (adapter.name !== 'builtin') {
+      try {
+        const externalResult = await adapter.createTask({
+          ...task,
+          // Маппинг полей
+          category: adapter.mapCategory(task.categorySlug),
+          department: adapter.mapDepartment(task.departmentSlug),
+          priority: caps.supportsPriority
+            ? adapter.mapPriority(task.priority)
+            : undefined,
+        });
+
+        await prisma.task.update({
+          where: { id: localTask.id },
+          data: {
+            externalTmsId: externalResult.externalId,
+            externalTmsType: adapter.name,
+            syncStatus: 'SYNCED',
+          },
+        });
+      } catch (error) {
+        // Внешняя TMS недоступна — задача остаётся в нашей системе
+        await prisma.task.update({
+          where: { id: localTask.id },
+          data: {
+            syncStatus: 'SYNC_ERROR',
+          },
+        });
+        // Уведомить менеджера о проблеме синхронизации
+        await NotificationService.alertSyncError(hotelId, localTask.id, error);
+      }
+    }
+
+    return localTask;
+  }
+
+  /**
+   * Синхронизация статуса: внешняя TMS → наша система.
+   * Вызывается по webhook или polling.
+   */
+  async syncStatusFromExternal(
+    hotelId: string,
+    externalTaskId: string,
+    externalStatus: string
+  ): Promise<void> {
+    const adapter = this.getAdapter(hotelId);
+    const caps = adapter.getCapabilities();
+
+    // Найти нашу задачу
+    const task = await prisma.task.findFirst({
+      where: { externalTmsId: externalTaskId, hotelId },
+    });
+    if (!task) return;
+
+    // Маппинг статуса
+    const internalStatus = adapter.mapStatusReverse(externalStatus);
+    if (!internalStatus) return; // Неизвестный статус — игнорируем
+
+    // Проверить допустимость перехода
+    if (!VALID_TRANSITIONS[task.status].includes(internalStatus)) return;
+
+    // Обновить
+    await this.updateTaskStatus(task.id, internalStatus, 'external_sync');
+  }
+
+  /**
+   * Заполнение "пробелов" в функциональности внешней TMS.
+   * Если TMS не поддерживает нужный статус — эмулируем его locally.
+   */
+  async handleCapabilityGap(
+    task: Task,
+    requiredCapability: keyof TMSCapabilities,
+    fallbackAction: () => Promise<void>
+  ): Promise<void> {
+    const adapter = this.getAdapter(task.hotelId);
+    const caps = adapter.getCapabilities();
+
+    if (caps[requiredCapability]) {
+      // TMS поддерживает — используем штатно
+      return;
+    }
+
+    // TMS не поддерживает — fallback на built-in логику
+    await fallbackAction();
+  }
+}
+```
+
+### 8.4. Стратегия "заполнения пробелов" (Gap-filling)
+
+Ключевая таблица: что делать, когда внешняя TMS не поддерживает нужную функцию.
+
+| Функция | Если TMS поддерживает | Если TMS НЕ поддерживает |
+|---|---|---|
+| **Статус ACCEPTED** | Маппим на их статус "accepted/acknowledged" | Эмулируем locally: ставим `ACCEPTED` в нашей БД. Для гостя UX идентичен. Во внешней TMS задача остаётся в "assigned". |
+| **Статус IN_PROGRESS** | Маппим на "in progress/started" | Эмулируем locally. Гость видит прогресс-бар. Внешняя TMS видит "assigned" → "completed". |
+| **Статус ON_HOLD** | Маппим | Эмулируем locally. Внешняя TMS не знает о паузе. |
+| **ETA** | Берём ETA из TMS | Рассчитываем сами через ETACalculator (на основе исторических данных и текущей загрузки) |
+| **Назначение конкретному сотруднику** | Передаём через API | Используем наш AssignmentService для выбора, но во внешнюю TMS отправляем задачу без assignee (или на департамент) |
+| **Приоритет** | Маппим на их приоритеты | Сохраняем locally, не передаём. Наш SLAMonitor работает с нашим приоритетом. |
+| **Заметки** | Отправляем через API | Храним только locally. Сотрудник видит в нашем Staff App. |
+| **Фото** | Отправляем через API (если поддерживают) | Храним locally. Доступны в нашем Dashboard. |
+| **Рейтинг** | Если TMS имеет rating → синхронизируем | Всегда own: рейтинг собирается только в нашем приложении гостя |
+| **Webhooks (real-time)** | Регистрируем webhook → получаем обновления | Запускаем polling с интервалом (обычно 30–60 сек) |
+| **Биллинг** | Передаём стоимость | Биллинг только в PMS (через отдельный PMS-адаптер) или locally |
+
+### 8.5. Dual-write стратегия
+
+При работе с внешней TMS каждое действие проходит два этапа:
+
+```typescript
+// Принцип: наша БД — всегда source of truth.
+// Внешняя TMS — secondary destination.
+
+async function updateTaskStatusDualWrite(
+  taskId: string,
+  newStatus: TaskStatus,
+  source: 'guest' | 'staff' | 'system' | 'external'
+): Promise<void> {
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  const adapter = TMSAdapterManager.getAdapter(task.hotelId);
+
+  // 1. Всегда обновляем нашу БД первой
+  await prisma.task.update({
+    where: { id: taskId },
+    data: { status: newStatus, /* timestamps... */ },
+  });
+
+  // 2. Emit событие (для SSE, push, SLA и т.д.)
+  await TaskEventBus.emit(statusToEvent(newStatus), task);
+
+  // 3. Синхронизация с внешней TMS (если есть и если не оттуда пришло)
+  if (source !== 'external' && task.externalTmsId) {
+    const externalStatus = adapter.mapStatus(newStatus);
+
+    if (externalStatus) {
+      // TMS поддерживает этот статус — отправляем
+      try {
+        await adapter.updateTaskStatus(task.externalTmsId, externalStatus);
+        await prisma.task.update({
+          where: { id: taskId },
+          data: { syncStatus: 'SYNCED' },
+        });
+      } catch (error) {
+        await prisma.task.update({
+          where: { id: taskId },
+          data: { syncStatus: 'SYNC_ERROR' },
+        });
+        // Retry queue
+        await SyncRetryQueue.add({ taskId, action: 'status_update', data: { newStatus } });
+      }
+    } else {
+      // TMS не поддерживает этот статус — ничего не отправляем
+      // Наша система эмулирует его locally
+      // syncStatus остаётся SYNCED (мы не рассинхронизированы, просто TMS более грубая)
+    }
+  }
+}
+```
+
+---
+
+## 9. Внешние TMS-интеграции
+
+### 9.1. Матрица возможностей внешних TMS
+
+```
+                        │ Hotelkit  │ Flexkeeping │ HotSOS  │ Generic │
+                        │           │             │ (Oracle)│ Webhook │
+────────────────────────┼───────────┼─────────────┼─────────┼─────────┤
+API тип                 │ REST      │ REST        │ REST    │ Webhook │
+Аутентификация          │ API Key   │ OAuth2      │ OAuth2  │ HMAC    │
+────────────────────────┼───────────┼─────────────┼─────────┼─────────┤
+Создание задач          │ ✅        │ ✅          │ ✅      │ ✅      │
+Обновление статуса      │ ✅        │ ✅          │ ✅      │ ⚠️ (1)  │
+Отмена                  │ ✅        │ ✅          │ ✅      │ ⚠️      │
+────────────────────────┼───────────┼─────────────┼─────────┼─────────┤
+Статус: accepted        │ ✅        │ ❌          │ ❌      │ ❌      │
+Статус: in_progress     │ ✅        │ ✅          │ ❌      │ ❌      │
+Статус: on_hold         │ ✅        │ ❌          │ ❌      │ ❌      │
+────────────────────────┼───────────┼─────────────┼─────────┼─────────┤
+Назначение сотруднику   │ ✅        │ ✅          │ ⚠️ (2)  │ ❌      │
+Назначение группе       │ ✅        │ ❌          │ ✅      │ ❌      │
+Переназначение          │ ✅        │ ✅          │ ❌      │ ❌      │
+Эскалация               │ ✅        │ ❌          │ ✅      │ ❌      │
+────────────────────────┼───────────┼─────────────┼─────────┼─────────┤
+Приоритет               │ ✅ (3lvl) │ ✅ (5lvl)   │ ✅(4lvl)│ ❌      │
+Заметки                 │ ✅        │ ✅          │ ✅      │ ❌      │
+Фото                    │ ✅        │ ✅          │ ❌      │ ❌      │
+ETA                     │ ❌        │ ❌          │ ❌      │ ❌      │
+Рейтинг                 │ ❌        │ ❌          │ ❌      │ ❌      │
+Биллинг                 │ ❌        │ ❌          │ ✅      │ ❌      │
+Кастомные поля          │ ✅        │ ✅          │ ⚠️      │ ❌      │
+────────────────────────┼───────────┼─────────────┼─────────┼─────────┤
+Webhooks (push)         │ ✅        │ ✅          │ ❌      │ ✅      │
+Polling нужен           │ ❌        │ ❌          │ ✅      │ ❌      │
+Rate limit              │ 60/min    │ 100/min     │ 30/min  │ Varies  │
+────────────────────────┴───────────┴─────────────┴─────────┴─────────┘
+
+(1) Generic webhook: зависит от конкретной реализации
+(2) HotSOS: назначение через department codes, не конкретному сотруднику
+```
+
+### 9.2. Пример: HotelkitAdapter
+
+```typescript
+class HotelkitAdapter implements ITMSAdapter {
+  readonly name = 'hotelkit';
+  readonly version = '2.0';
+
+  private apiClient: HotelkitAPIClient;
+  private config: HotelkitConfig;
+
+  constructor(config: HotelkitConfig) {
+    this.config = config;
+    this.apiClient = new HotelkitAPIClient({
+      baseUrl: config.apiUrl,
+      apiKey: config.apiKey,
+      hotelCode: config.hotelCode,
+    });
+  }
+
+  getCapabilities(): TMSCapabilities {
+    return {
+      supportedStatuses: ['open', 'acknowledged', 'in_progress', 'on_hold', 'done', 'cancelled'],
+      hasAcceptedStatus: true,    // "acknowledged"
+      hasInProgressStatus: true,  // "in_progress"
+      hasOnHoldStatus: true,      // "on_hold"
+      supportsAssignment: true,
+      supportsGroupAssignment: true,
+      supportsReassignment: true,
+      supportsEscalation: true,
+      supportsPriority: true,
+      supportsNotes: true,
+      supportsPhotos: true,
+      supportsETA: false,         // Hotelkit не возвращает ETA
+      supportsRating: false,
+      supportsBilling: false,
+      supportsCustomFields: true,
+      supportsWebhooks: true,
+      supportsPolling: true,
+      pollingIntervalMs: 60000,
+      maxTitleLength: 255,
+      maxNoteLength: 2000,
+      maxPhotosPerTask: 10,
+      rateLimitPerMinute: 60,
+    };
+  }
+
+  // Status mapping: наш → Hotelkit
+  mapStatus(internalStatus: TaskStatus): string | null {
+    const map: Record<TaskStatus, string | null> = {
+      CREATED: 'open',
+      ASSIGNED: 'open',        // Hotelkit не различает created/assigned
+      ACCEPTED: 'acknowledged',
+      IN_PROGRESS: 'in_progress',
+      ON_HOLD: 'on_hold',
+      COMPLETED: 'done',
+      CANCELLED: 'cancelled',
+      ESCALATED: null,          // Hotelkit имеет свою эскалацию
+    };
+    return map[internalStatus];
+  }
+
+  // Status mapping: Hotelkit → наш
+  mapStatusReverse(externalStatus: string): TaskStatus | null {
+    const map: Record<string, TaskStatus> = {
+      'open': 'CREATED',
+      'acknowledged': 'ACCEPTED',
+      'in_progress': 'IN_PROGRESS',
+      'on_hold': 'ON_HOLD',
+      'done': 'COMPLETED',
+      'cancelled': 'CANCELLED',
+    };
+    return map[externalStatus] || null;
+  }
+
+  mapPriority(internal: TaskPriority): string | null {
+    // Hotelkit: 3 уровня → маппим наши 4 на их 3
+    const map: Record<TaskPriority, string> = {
+      LOW: 'low',
+      NORMAL: 'normal',
+      HIGH: 'high',
+      URGENT: 'high', // Нет "urgent" в Hotelkit
+    };
+    return map[internal];
+  }
+
+  async createTask(payload: TaskCreatePayload): Promise<TMSTaskResult> {
+    const response = await this.apiClient.post('/tasks', {
+      title: payload.title.substring(0, 255),
+      description: payload.description,
+      category_id: payload.category,
+      department_id: payload.department,
+      room: payload.roomNumber,
+      priority: payload.priority,
+      assignee_id: payload.assigneeExternalId,
+      custom_fields: payload.customFields,
+    });
+
+    return {
+      success: true,
+      externalId: response.data.id,
+      externalStatus: response.data.status,
+    };
+  }
+
+  async updateTaskStatus(externalId: string, status: string): Promise<TMSTaskResult> {
+    const response = await this.apiClient.patch(`/tasks/${externalId}`, {
+      status,
+    });
+
+    return {
+      success: true,
+      externalId,
+      externalStatus: response.data.status,
+    };
+  }
+
+  // Webhook handler
+  async handleWebhook(payload: HotelkitWebhookPayload): Promise<void> {
+    switch (payload.event) {
+      case 'task.status_changed':
+        await TMSAdapterManager.syncStatusFromExternal(
+          this.config.hotelId,
+          payload.task_id,
+          payload.new_status
+        );
+        break;
+      case 'task.assigned':
+        await TMSAdapterManager.syncAssignmentFromExternal(
+          this.config.hotelId,
+          payload.task_id,
+          payload.assignee_id
+        );
+        break;
+      case 'task.note_added':
+        await TMSAdapterManager.syncNoteFromExternal(
+          this.config.hotelId,
+          payload.task_id,
+          payload.note
+        );
+        break;
+    }
+  }
+}
+```
+
+### 9.3. Пример: FlexkeepingAdapter (с ограничениями)
+
+```typescript
+class FlexkeepingAdapter implements ITMSAdapter {
+  readonly name = 'flexkeeping';
+
+  getCapabilities(): TMSCapabilities {
+    return {
+      supportedStatuses: ['pending', 'in_progress', 'done', 'cancelled'],
+      hasAcceptedStatus: false,     // ← Нет! Задача сразу "pending" → "in_progress"
+      hasInProgressStatus: true,
+      hasOnHoldStatus: false,       // ← Нет!
+      supportsAssignment: true,
+      supportsGroupAssignment: false, // ← Нет! Только конкретному сотруднику
+      supportsReassignment: true,
+      supportsEscalation: false,     // ← Нет!
+      supportsPriority: true,        // 5 уровней
+      supportsNotes: true,
+      supportsPhotos: true,
+      supportsETA: false,
+      supportsRating: false,
+      supportsBilling: false,
+      supportsCustomFields: true,
+      supportsWebhooks: true,
+      supportsPolling: false,
+      rateLimitPerMinute: 100,
+    };
+  }
+
+  // Status mapping: наш → Flexkeeping
+  mapStatus(internalStatus: TaskStatus): string | null {
+    const map: Record<TaskStatus, string | null> = {
+      CREATED: 'pending',
+      ASSIGNED: 'pending',
+      ACCEPTED: null,           // ← Нет аналога! Не отправляем.
+      IN_PROGRESS: 'in_progress',
+      ON_HOLD: null,            // ← Нет аналога! Не отправляем.
+      COMPLETED: 'done',
+      CANCELLED: 'cancelled',
+      ESCALATED: null,          // ← Нет аналога!
+    };
+    return map[internalStatus];
+  }
+
+  // Важно: при mapStatus === null наша система
+  // эмулирует этот статус locally.
+  // Гость всё равно видит полный прогресс-бар с 4 стадиями.
+  // Flexkeeping просто "не знает" про accepted и on_hold.
+}
+```
+
+### 9.4. GenericWebhookAdapter
+
+Для TMS, у которых нет полноценного API, но есть возможность отправлять/получать вебхуки:
+
+```typescript
+class GenericWebhookAdapter implements ITMSAdapter {
+  readonly name = 'generic_webhook';
+
+  getCapabilities(): TMSCapabilities {
+    return {
+      supportedStatuses: ['open', 'closed'],  // Минимум
+      hasAcceptedStatus: false,
+      hasInProgressStatus: false,
+      hasOnHoldStatus: false,
+      supportsAssignment: false,
+      supportsGroupAssignment: false,
+      supportsReassignment: false,
+      supportsEscalation: false,
+      supportsPriority: false,
+      supportsNotes: false,
+      supportsPhotos: false,
+      supportsETA: false,
+      supportsRating: false,
+      supportsBilling: false,
+      supportsCustomFields: false,
+      supportsWebhooks: true,   // Единственная сильная сторона
+      supportsPolling: false,
+    };
+  }
+
+  // Этот адаптер покрывает минимальный сценарий:
+  // 1. Создаём задачу → отправляем webhook во внешнюю систему
+  // 2. Получаем webhook обратно когда задача закрыта
+  // Всё остальное (назначение, статусы, ETA) — эмулируется locally
+
+  async createTask(payload: TaskCreatePayload): Promise<TMSTaskResult> {
+    const webhookUrl = this.config.outgoingWebhookUrl;
+
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Signature': this.signPayload(payload),
+      },
+      body: JSON.stringify({
+        event: 'task.created',
+        task: {
+          title: payload.title,
+          room: payload.roomNumber,
+          category: payload.categorySlug,
+          description: payload.description,
+          priority: payload.priority,
+          timestamp: new Date().toISOString(),
+        },
+      }),
+    });
+
+    return {
+      success: response.ok,
+      externalId: response.ok ? (await response.json()).id : null,
+    };
+  }
+}
+```
+
+### 9.5. Настройка TMS-коннектора в Admin Panel
+
+```typescript
+// Модель конфигурации TMS для каждого отеля
+interface TMSConnectorConfig {
+  hotelId: string;
+  mode: 'builtin' | 'external' | 'hybrid';
+
+  // Для external/hybrid:
+  tmsType: 'hotelkit' | 'flexkeeping' | 'hotsos' | 'generic_webhook';
+  credentials: {
+    apiUrl: string;
+    apiKey?: string;
+    clientId?: string;
+    clientSecret?: string;
+    hotelCode?: string;
+  };
+
+  // Маппинг категорий (наши → внешние)
+  categoryMappings: {
+    internalSlug: string;
+    externalId: string;
+    externalName: string;
+  }[];
+
+  // Маппинг департаментов
+  departmentMappings: {
+    internalSlug: string;
+    externalId: string;
+  }[];
+
+  // Маппинг сотрудников (для assignment)
+  staffMappings: {
+    internalStaffId: string;
+    externalStaffId: string;
+  }[];
+
+  // Для hybrid: какие категории идут во внешнюю TMS
+  hybridCategorySlugs?: string[]; // ["maintenance", "room_service"]
+  // Остальные категории обрабатываются built-in TMS
+
+  // Webhook endpoints
+  incomingWebhookSecret?: string;  // Для верификации входящих вебхуков
+  outgoingWebhookUrl?: string;     // Для generic webhook
+}
+```
+
+---
+
+## 10. Chat Flow и NLU-обработка
+
+### 10.1. NLU Pipeline
+
+```typescript
+class NLUPipeline {
+  /**
+   * Вход: текст или транскрипция голосового сообщения
+   * Выход: структурированный интент с entities
+   */
+  async parse(input: string, context: GuestContext): Promise<NLUResult> {
+    // 1. Language detection
+    const language = await this.detectLanguage(input);
+
+    // 2. Intent classification
+    //    Используем GPT с system prompt, содержащим список категорий отеля
+    const intentResult = await this.classifyIntent(input, context, language);
+
+    // 3. Entity extraction
+    //    Количество, тип, время, номер комнаты (если отличается от контекста)
+    const entities = await this.extractEntities(input, intentResult.category, language);
+
+    // 4. Проверка достаточности данных
+    const missingFields = this.checkRequiredFields(
+      intentResult.category,
+      entities,
+      context
+    );
+
+    return {
+      language,
+      intent: intentResult.intent,       // "request_service", "check_status", "cancel_order", "general_question"
+      category: intentResult.category,   // "towels_amenities", "room_cleaning", etc. или null
+      entities,                          // { type: "bath", quantity: 2, preferredTime: "14:00" }
+      confidence: intentResult.confidence,
+      missingFields,                     // ["quantity"] — что нужно уточнить
+      suggestedDefaults: this.getSuggestedDefaults(intentResult.category, entities, context),
+    };
+  }
+}
+
+interface GuestContext {
+  guestId: string;
+  guestName: string;
+  roomNumber: string;
+  hotelId: string;
+  language: string;
+  checkIn: Date;
+  checkOut: Date;
+  isVip: boolean;
+  previousRequests: Task[];        // История запросов (для умных дефолтов)
+  currentActiveOrders: Task[];     // Активные заказы (для "где мои полотенца?")
+  hotelCategories: TaskCategory[]; // Доступные категории этого отеля
+}
+```
+
+### 10.2. Dialog Manager
+
+```typescript
+class DialogManager {
+  /**
+   * Управляет conversation flow:
+   * - Если данных достаточно → подтверждение
+   * - Если данных не хватает → уточняющий вопрос
+   * - Если интент не сервисный → обычный ответ AI
+   */
+  async handleMessage(
+    message: string,
+    context: GuestContext,
+    dialogState: DialogState
+  ): Promise<ChatResponse> {
+
+    // Если идёт активный диалог (ждём ответ на уточняющий вопрос)
+    if (dialogState.awaitingClarification) {
+      return this.handleClarificationResponse(message, context, dialogState);
+    }
+
+    // Новый запрос
+    const nluResult = await NLUPipeline.parse(message, context);
+
+    // Не сервисный интент — обычный AI ответ
+    if (nluResult.intent !== 'request_service') {
+      return this.handleNonServiceIntent(nluResult, context);
+    }
+
+    // Сервисный интент
+    if (nluResult.missingFields.length === 0) {
+      // Все данные есть → предложить подтверждение
+      return this.proposeConfirmation(nluResult, context);
+    } else {
+      // Нужны уточнения → задать вопрос
+      return this.askClarification(nluResult, context);
+    }
+  }
+
+  /**
+   * Формирование уточняющего вопроса.
+   * Принцип: один вопрос за раз, с quick-reply кнопками.
+   */
+  private async askClarification(
+    nluResult: NLUResult,
+    context: GuestContext
+  ): Promise<ChatResponse> {
+    const field = nluResult.missingFields[0]; // Первое недостающее поле
+    const category = await TaskCategory.findBySlug(nluResult.category, context.hotelId);
+    const rules = category.clarificationRules;
+    const fieldConfig = rules.fields.find(f => f.key === field);
+
+    return {
+      type: 'clarification',
+      text: fieldConfig.prompt[context.language],
+      quickReplies: fieldConfig.quickReplies[context.language] || fieldConfig.quickReplies,
+      dialogState: {
+        awaitingClarification: true,
+        category: nluResult.category,
+        collectedEntities: nluResult.entities,
+        missingFields: nluResult.missingFields,
+        currentField: field,
+      },
+    };
+  }
+
+  /**
+   * Предложение подтверждения с умными дефолтами.
+   */
+  private async proposeConfirmation(
+    nluResult: NLUResult,
+    context: GuestContext
+  ): Promise<ChatResponse> {
+    const details = { ...nluResult.suggestedDefaults, ...nluResult.entities };
+    const category = await TaskCategory.findBySlug(nluResult.category, context.hotelId);
+
+    // Проверить доступность
+    const availability = await this.checkAvailability(category, context);
+    if (!availability.available) {
+      return this.handleUnavailable(availability, category, context);
+    }
+
+    // Проверить стоимость
+    const pricing = await this.calculatePricing(category, details, context);
+
+    // Рассчитать ETA
+    const eta = await ETACalculator.estimate(category, context.hotelId);
+
+    // Сформировать текст подтверждения
+    const confirmationText = this.buildConfirmationText(
+      category, details, eta, pricing, context.language
+    );
+
+    return {
+      type: 'confirmation',
+      text: confirmationText,
+      quickReplies: pricing.cost > 0
+        ? [
+            { label: `Да, ${pricing.formattedCost} → счёт номера`, value: 'confirm_paid' },
+            { label: 'Нет, отмена', value: 'cancel' },
+          ]
+        : [
+            { label: 'Да ✓', value: 'confirm' },
+            { label: 'Изменить', value: 'modify' },
+          ],
+      dialogState: {
+        awaitingConfirmation: true,
+        category: nluResult.category,
+        collectedEntities: details,
+        eta,
+        pricing,
+      },
+    };
+  }
+
+  /**
+   * Обработка подтверждения → создание задачи.
+   */
+  private async handleConfirmation(
+    context: GuestContext,
+    dialogState: DialogState
+  ): Promise<ChatResponse> {
+    // Создать задачу
+    const task = await TaskService.create({
+      hotelId: context.hotelId,
+      guestId: context.guestId,
+      roomNumber: context.roomNumber,
+      categorySlug: dialogState.category,
+      details: dialogState.collectedEntities,
+      priority: context.isVip ? 'HIGH' : 'NORMAL',
+      source: 'CHAT',
+      isBillable: dialogState.pricing?.cost > 0,
+      cost: dialogState.pricing?.cost,
+    });
+
+    return {
+      type: 'task_created',
+      text: null, // Текст не нужен — показываем карточку
+      taskCard: {
+        taskId: task.id,
+        title: task.title,
+        icon: task.category.icon,
+        roomNumber: task.roomNumber,
+        etaMinutes: task.etaMinutes,
+        status: task.status,
+        cost: task.isBillable ? task.cost : null,
+        ordersDeepLink: `roomie://orders/${task.id}`,
+      },
+      quickReplies: [],
+      dialogState: { idle: true },
+    };
+  }
+}
+```
+
+### 10.3. Специальные интенты (не сервисные)
+
+```typescript
+// Помимо "request_service", NLU распознаёт:
+
+const NON_SERVICE_INTENTS = {
+  'check_status': {
+    // "Где мои полотенца?", "Статус уборки?"
+    handler: async (context: GuestContext) => {
+      const activeOrders = context.currentActiveOrders;
+      if (activeOrders.length === 0) {
+        return { text: 'У вас нет активных заказов.' };
+      }
+      // Если один → показать статус
+      // Если несколько → спросить какой
+      if (activeOrders.length === 1) {
+        const order = activeOrders[0];
+        return {
+          text: `Ваш заказ "${order.title}" сейчас в статусе "${statusToHuman(order.status, context.language)}". Ориентировочно: ~${order.etaMinutes} мин.`,
+          quickReplies: [{ label: 'Перейти к заказам', value: 'deeplink:orders' }],
+        };
+      }
+    },
+  },
+
+  'cancel_order': {
+    // "Отмените уборку", "Не надо полотенца"
+    handler: async (context: GuestContext, entities: any) => {
+      // Найти релевантный заказ
+      // Проверить что статус позволяет отмену
+      // Запросить подтверждение
+    },
+  },
+
+  'repeat_order': {
+    // "Ещё полотенца", "Как в прошлый раз"
+    handler: async (context: GuestContext) => {
+      const lastSimilar = context.previousRequests[0];
+      if (lastSimilar) {
+        return {
+          text: `Ещё ${lastSimilar.title}, как в прошлый раз?`,
+          quickReplies: [
+            { label: 'Да, как раньше ✓', value: 'confirm_repeat' },
+            { label: 'Другое', value: 'modify' },
+          ],
+        };
+      }
+    },
+  },
+
+  'complaint': {
+    // "У меня не работает кондиционер", "Шумно", "Грязно"
+    handler: async (context: GuestContext, entities: any) => {
+      // Создать задачу с category "maintenance" или "complaint"
+      // Поднять приоритет
+      // Уведомить duty manager если серьёзно
+    },
+  },
+
+  'general_question': {
+    // "Во сколько завтрак?", "Какой пароль от WiFi?"
+    handler: async (context: GuestContext) => {
+      // RAG по базе знаний отеля → ответ из FAQ
+    },
+  },
+};
+```
+
+### 10.4. Формат сообщений в чате
+
+```typescript
+// Типы сообщений, которые могут быть в чате:
+
+interface ChatMessage {
+  id: string;
+  conversationId: string;
+  timestamp: Date;
+  type: ChatMessageType;
+  sender: 'guest' | 'ai' | 'system' | 'staff';
+}
+
+type ChatMessageType =
+  | 'text'                // Обычный текст
+  | 'voice'               // Голосовое сообщение (audioUrl + transcription)
+  | 'clarification'       // AI задаёт уточняющий вопрос (text + quickReplies)
+  | 'confirmation'        // AI предлагает подтвердить заказ (text + quickReplies)
+  | 'task_card'           // Карточка созданного заказа (rich card с прогресс-баром)
+  | 'status_update'       // Системное мини-уведомление (компактный разделитель)
+  | 'rating_request'      // Запрос оценки (звёздочки)
+  | 'unavailable_notice'  // Услуга недоступна (text + альтернативы)
+  | 'pricing_notice'      // Уведомление о стоимости
+  | 'delay_notice'        // Уведомление о задержке
+  | 'image'               // Фото (от сотрудника — например фото убранного номера)
+  ;
+
+// Пример: task_card
+interface TaskCardMessage extends ChatMessage {
+  type: 'task_card';
+  taskId: string;
+  title: string;              // "Полотенца × 2 (банные)"
+  icon: string;               // "🛁"
+  roomNumber: string;
+  etaMinutes: number;
+  status: TaskStatus;
+  progressStages: {           // Стадии прогресс-бара
+    label: string;            // "Принят", "В пути", "Доставлено"
+    status: 'done' | 'current' | 'pending';
+    timestamp?: Date;
+  }[];
+  cost?: { amount: number; currency: string };
+  ordersDeepLink: string;     // Deep link на вкладку Orders
+}
+
+// Пример: status_update (компактный разделитель)
+interface StatusUpdateMessage extends ChatMessage {
+  type: 'status_update';
+  taskId: string;
+  statusText: string;         // "Сотрудник в пути"
+  timestamp: Date;
+  // Отображается как: ─── 14:35 · Сотрудник в пути ──────────
+  // НЕ как обычный бабл, а как разделительная строка
+}
+```
+
+---
+
+## 11. Guest App — интерфейс гостя
+
+### 11.1. Точки входа для создания запроса
+
+```
+Guest App
+├── Tab: Chat
+│   ├── Текстовый ввод → NLU → Dialog Flow
+│   ├── Голосовой ввод → STT → NLU → Dialog Flow
+│   └── Quick Actions Bar (над клавиатурой):
+│       [🛏 Уборка] [🛁 Полотенца] [🍫 Минибар] [🕐 Late C/O] [⋯ Ещё]
+│
+├── Tab: Services (альтернатива чату)
+│   ├── Карточки категорий (grid 2×n)
+│   │   ├── 🛏 Уборка номера → открывает форму / или чат с pre-filled
+│   │   ├── 🛁 Полотенца → ...
+│   │   ├── 🍫 Минибар → ...
+│   │   ├── 🕐 Late checkout → ...
+│   │   └── [Кастомные категории отеля]
+│   └── При нажатии: два варианта (настраивается отелем):
+│       a) Открывает мини-форму внутри Services → подтверждение → создание задачи
+│       b) Перенаправляет в Chat с pre-filled сообщением
+│
+├── Tab: Orders (Заказы)
+│   ├── Секция: Активные
+│   │   └── Карточки заказов с live-прогрессом
+│   ├── Секция: История
+│   │   └── Завершённые заказы с рейтингами
+│   └── Каждая карточка при нажатии → детальный экран:
+│       ├── Полный прогресс-бар с timestamps
+│       ├── Детали заказа
+│       ├── Имя сотрудника (если настроено)
+│       ├── [Отменить] (если status ≤ ASSIGNED)
+│       ├── [Связаться] → открывает чат с контекстом
+│       └── [Проблема с заказом] → эскалация
+│
+└── Tab: More / Profile
+```
+
+### 11.2. Прогресс-бар в Orders
+
+```typescript
+// Стадии прогресс-бара зависят от категории и текущего статуса
+
+function getProgressStages(task: Task): ProgressStage[] {
+  // Дефолтные стадии для большинства категорий
+  const stages = [
+    {
+      label: t('progress.accepted', task.guest.language),  // "Принят"
+      matchStatuses: ['CREATED', 'ASSIGNED', 'ACCEPTED'],
+      icon: '✓',
+    },
+    {
+      label: t('progress.in_progress', task.guest.language), // "В пути" / "Выполняется"
+      matchStatuses: ['IN_PROGRESS'],
+      icon: '🚶',
+    },
+    {
+      label: t('progress.completed', task.guest.language),   // "Готово"
+      matchStatuses: ['COMPLETED'],
+      icon: '✅',
+    },
+  ];
+
+  // Определить текущую позицию
+  return stages.map((stage, index) => ({
+    ...stage,
+    status: stage.matchStatuses.includes(task.status)
+      ? 'current'
+      : index < getCurrentStageIndex(task.status, stages)
+        ? 'done'
+        : 'pending',
+    timestamp: getTimestampForStage(task, stage),
+  }));
+}
+```
+
+---
+
+## 12. Staff App — интерфейс сотрудника
+
+### 12.1. Экраны Staff App
+
+```
+Staff App (отдельное приложение или раздел в HotelMol Mobile)
+├── Login (по employee ID + PIN или biometrics)
+│
+├── Tab: Мои задачи
+│   ├── Секция: Новые (ожидающие принятия)
+│   │   └── Карточка задачи:
+│   │       ├── Заголовок, номер комнаты, категория, приоритет
+│   │       ├── Время с момента создания (таймер)
+│   │       ├── [Принять] / [Отклонить]
+│   │       └── Swipe → Принять (быстрое действие)
+│   │
+│   ├── Секция: В работе
+│   │   └── Карточка задачи:
+│   │       ├── Заголовок, номер, детали
+│   │       ├── Таймер выполнения
+│   │       ├── [Начать] (→ IN_PROGRESS) / [Готово] (→ COMPLETED)
+│   │       ├── [Пауза] (→ ON_HOLD, с выбором причины)
+│   │       ├── [Фото] (до/после)
+│   │       ├── [Заметка] (добавить комментарий)
+│   │       └── [Эскалация] (передать выше)
+│   │
+│   └── Секция: Завершённые (за сегодня)
+│
+├── Tab: Все задачи (для supervisor+)
+│   ├── Фильтры: статус, департамент, этаж, приоритет, сотрудник
+│   ├── Kanban-вид: колонки по статусам (drag-n-drop для supervisor+)
+│   └── Список: все задачи с сортировкой
+│
+├── Tab: Уведомления
+│   └── Лента: новые задачи, эскалации, напоминания
+│
+└── Tab: Профиль
+    ├── Статус: На смене / Не на смене
+    ├── Текущая загрузка
+    ├── Статистика за день/неделю/месяц
+    └── Настройки уведомлений
+```
+
+### 12.2. Действия сотрудника с задачей
+
+```typescript
+// Все доступные действия определяются ролью + текущим статусом задачи
+
+function getAvailableActions(task: Task, staff: Staff): StaffAction[] {
+  const actions: StaffAction[] = [];
+  const role = staff.role;
+
+  switch (task.status) {
+    case 'ASSIGNED':
+      if (task.assigneeId === staff.id || task.assigneeGroupId && staff.groups.includes(task.assigneeGroupId)) {
+        actions.push('accept', 'decline');
+      }
+      if (['supervisor', 'shift_manager', 'duty_manager', 'gm'].includes(role)) {
+        actions.push('reassign', 'change_priority', 'cancel');
+      }
+      break;
+
+    case 'ACCEPTED':
+      if (task.assigneeId === staff.id) {
+        actions.push('start', 'add_note', 'add_photo');
+      }
+      if (['supervisor', 'shift_manager'].includes(role)) {
+        actions.push('reassign');
+      }
+      break;
+
+    case 'IN_PROGRESS':
+      if (task.assigneeId === staff.id) {
+        actions.push('complete', 'hold', 'add_note', 'add_photo', 'escalate');
+      }
+      if (['supervisor', 'shift_manager'].includes(role)) {
+        actions.push('reassign', 'change_priority');
+      }
+      break;
+
+    case 'ON_HOLD':
+      if (task.assigneeId === staff.id) {
+        actions.push('resume', 'escalate', 'add_note');
+      }
+      break;
+
+    case 'ESCALATED':
+      if (['supervisor', 'shift_manager', 'duty_manager', 'gm'].includes(role)) {
+        actions.push('reassign', 'accept', 'cancel', 'change_priority');
+      }
+      break;
+  }
+
+  return actions;
+}
+```
+
+---
+
+## 13. Dashboard — интерфейс менеджмента
+
+### 13.1. Roomie Dashboard (Next.js) — Task Management секция
+
+```
+Dashboard → Task Management
+├── Real-time Task Board
+│   ├── Kanban view (колонки: Created → Assigned → In Progress → Completed)
+│   ├── List view (таблица с фильтрами и сортировкой)
+│   ├── Map view (план этажей с точками задач) — опционально
+│   ├── Фильтры: департамент, статус, приоритет, этаж, сотрудник, категория, дата
+│   └── Действия: переназначить, эскалировать, отменить, изменить приоритет
+│
+├── SLA Monitor
+│   ├── Текущие нарушения SLA (красные карточки)
+│   ├── Предупреждения (жёлтые — приближается deadline)
+│   ├── Статистика SLA за период: % соблюдения, среднее время, worst offenders
+│   └── Алерты при нарушении (real-time bell icon)
+│
+├── Staff Workload
+│   ├── Текущая загрузка каждого сотрудника (прогресс-бар)
+│   ├── Кто на смене / кто нет
+│   ├── История загрузки за день
+│   └── Drag-n-drop переназначение задач между сотрудниками
+│
+├── Analytics
+│   ├── Среднее время выполнения по категориям
+│   ├── Количество задач по часам/дням (графики)
+│   ├── Рейтинг сотрудников по качеству и скорости
+│   ├── SLA compliance rate
+│   ├── Топ причин эскалаций
+│   ├── Guest satisfaction (средний рейтинг)
+│   └── Сравнение смен / департаментов
+│
+├── TMS Sync Status (если external TMS)
+│   ├── Статус подключения к внешней TMS (green/yellow/red)
+│   ├── Последняя синхронизация
+│   ├── Ошибки синхронизации (с возможностью retry)
+│   └── Задачи с syncStatus = SYNC_ERROR
+│
+└── Settings (Admin)
+    ├── Категории сервисов (CRUD + настройка)
+    ├── SLA конфигурация по категориям
+    ├── Департаменты и группы
+    ├── TMS коннектор (настройка, маппинг, тестирование)
+    ├── Pricing rules
+    └── Notification rules
+```
+
+---
+
+## 14. Real-time коммуникация
+
+### 14.1. SSE (Server-Sent Events) — основной транспорт
+
+```typescript
+// Endpoint: GET /api/sse/tasks?token=<auth_token>
+
+// Типы событий для разных клиентов:
+
+// Для Guest App:
+interface GuestSSEEvents {
+  'task:status'     // Статус задачи изменился
+  'task:eta'        // ETA обновился
+  'task:card'       // Новая карточка задачи (после создания)
+  'task:delay'      // Задержка
+  'task:completed'  // Задача завершена
+  'task:cancelled'  // Задача отменена
+  'task:rating'     // Запрос рейтинга
+}
+
+// Для Staff App:
+interface StaffSSEEvents {
+  'task:new'        // Новая задача для этого сотрудника/группы
+  'task:reassigned' // Задача переназначена
+  'task:cancelled'  // Задача отменена (которая была у него)
+  'task:escalated'  // Задача эскалирована (для supervisor+)
+  'task:note'       // Новая заметка к задаче
+}
+
+// Для Dashboard:
+interface DashboardSSEEvents {
+  'task:any'        // Любое изменение любой задачи (для real-time board)
+  'sla:warning'     // SLA предупреждение
+  'sla:breach'      // SLA нарушение
+  'staff:status'    // Сотрудник online/offline
+  'sync:error'      // Ошибка синхронизации с внешней TMS
+}
+```
+
+### 14.2. Channel-based подписка
+
+```typescript
+// Каждый клиент подписывается на свои каналы:
+
+// Guest: подписка на свои задачи
+`guest:${guestId}:tasks`
+
+// Staff member: подписка на свои задачи + задачи своей группы
+`staff:${staffId}:tasks`
+`group:${groupId}:tasks`
+
+// Supervisor: подписка на весь департамент
+`department:${departmentId}:tasks`
+
+// GM/Dashboard: подписка на весь отель
+`hotel:${hotelId}:tasks`
+`hotel:${hotelId}:sla`
+`hotel:${hotelId}:sync`
+```
+
+---
+
+## 15. SLA-система
+
+### 15.1. Конфигурация SLA
+
+```typescript
+interface SLAConfig {
+  categoryId: string;
+  hotelId: string;
+
+  // Таймауты
+  acceptanceTimeoutMinutes: number;    // Время на принятие задачи (default: 5)
+  warningThresholdPercent: number;     // Когда предупредить (default: 75% от SLA)
+  slaMinutes: number;                  // Макс. время выполнения (default зависит от категории)
+
+  // По приоритетам (override основных значений)
+  priorityOverrides: {
+    [key in TaskPriority]?: {
+      slaMinutes: number;
+      acceptanceTimeoutMinutes: number;
+    };
+  };
+  // Пример:
+  // { URGENT: { slaMinutes: 15, acceptanceTimeoutMinutes: 2 } }
+
+  // По времени суток
+  timeOfDayOverrides?: {
+    nighttime?: { slaMultiplier: number; from: string; to: string };
+    // { slaMultiplier: 2, from: "23:00", to: "07:00" } — ночью SLA удвоен
+  };
+
+  // Эскалация
+  escalationChain: {
+    level: number;
+    afterMinutes: number;    // Через сколько минут после SLA breach
+    targetRole: string;       // Кому эскалировать
+    actions: string[];        // Что делать: "notify", "reassign", "alert_guest"
+  }[];
+  // Пример:
+  // [
+  //   { level: 1, afterMinutes: 0, targetRole: "supervisor", actions: ["notify"] },
+  //   { level: 2, afterMinutes: 10, targetRole: "shift_manager", actions: ["notify", "reassign"] },
+  //   { level: 3, afterMinutes: 20, targetRole: "gm", actions: ["notify", "alert_guest"] },
+  // ]
+}
+```
+
+---
+
+## 16. Push-уведомления
+
+### 16.1. Матрица уведомлений
+
+| Событие | Гость (Push) | Гость (In-App/SSE) | Сотрудник | Супервайзор | GM |
+|---|---|---|---|---|---|
+| Задача создана | — | Карточка в чате | Push: "Новый запрос" | SSE: dashboard | SSE: dashboard |
+| Задача назначена | Push: "Запрос принят в работу" | Статус-update в чате | — | — | — |
+| Задача accepted | — | Статус-update | — | — | — |
+| In progress | Push: "Сотрудник в пути" | Статус-update + ETA | — | — | — |
+| Completed | Push: "Готово!" | Статус-update + финальная карточка | — | — | — |
+| Задержка | Push: "Задержка, новое время: ~X мин" | Delay notice | — | — | — |
+| SLA warning | — | — | — | Push: "⚠️ SLA close" | SSE |
+| SLA breach | Push: "Извините за задержку" | Delay notice | Push: "🔴 SLA!" | Push: "🔴 SLA!" | Push: "🔴 SLA!" |
+| Рейтинг (через 3 мин) | Push: "Оцените обслуживание" | Rating card в чате | — | — | — |
+| Sync error | — | — | — | — | Push: "TMS sync error" |
+
+---
+
+## 17. ETA-калькулятор
+
+```typescript
+class ETACalculator {
+  /**
+   * Рассчитывает ETA для задачи.
+   * Возвращает количество минут до завершения.
+   */
+  async estimate(
+    categoryId: string,
+    hotelId: string,
+    options?: {
+      priority?: TaskPriority;
+      floor?: number;
+      currentTime?: Date;
+    }
+  ): Promise<number> {
+    const category = await TaskCategory.findById(categoryId);
+
+    // 1. Базовое время (из настроек категории)
+    let eta = category.defaultEtaMinutes;
+
+    // 2. Историческое среднее (если есть данные за последние 30 дней)
+    const historicalAvg = await this.getHistoricalAvg(categoryId, hotelId, 30);
+    if (historicalAvg) {
+      eta = Math.max(eta, historicalAvg); // Используем большее из двух
+    }
+
+    // 3. Коэффициент загрузки
+    const currentLoad = await this.getCurrentDepartmentLoad(category.defaultDepartmentId);
+    const normalLoad = await this.getNormalLoad(category.defaultDepartmentId);
+    const loadFactor = Math.max(1, currentLoad / normalLoad);
+    eta *= loadFactor;
+
+    // 4. Коэффициент времени суток
+    const hour = (options?.currentTime || new Date()).getHours();
+    if (hour >= 23 || hour < 7) {
+      eta *= 2; // Ночью — удвоенное время
+    } else if (hour >= 10 && hour <= 12) {
+      eta *= 1.3; // Час пик checkout — +30%
+    }
+
+    // 5. Коэффициент приоритета
+    if (options?.priority === 'URGENT') {
+      eta *= 0.5; // Срочные — ускоряем ожидание
+    }
+
+    // 6. Округление
+    eta = Math.ceil(eta / 5) * 5; // Округляем до 5 минут
+
+    return eta;
+  }
+
+  /**
+   * Пересчёт ETA при изменении статуса.
+   */
+  async recalculate(task: Task): Promise<number> {
+    let remainingEta: number;
+
+    switch (task.status) {
+      case 'CREATED':
+      case 'ASSIGNED':
+        // Ещё не начата — полный ETA
+        remainingEta = await this.estimate(task.categoryId, task.hotelId);
+        break;
+
+      case 'ACCEPTED':
+        // Принята, но не начата — предположительно скоро начнут
+        remainingEta = (await this.estimate(task.categoryId, task.hotelId)) * 0.7;
+        break;
+
+      case 'IN_PROGRESS':
+        // В процессе — рассчитываем оставшееся время
+        const elapsed = this.minutesSince(task.startedAt!);
+        const totalEstimate = await this.estimate(task.categoryId, task.hotelId);
+        remainingEta = Math.max(5, totalEstimate - elapsed);
+        break;
+
+      case 'ON_HOLD':
+        // На паузе — неопределённо, но даём оценку
+        remainingEta = await this.estimate(task.categoryId, task.hotelId);
+        break;
+
+      default:
+        remainingEta = 0;
+    }
+
+    // Обновить в БД и отправить гостю
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { etaMinutes: remainingEta, etaUpdatedAt: new Date() },
+    });
+
+    await TaskEventBus.emit(TaskEvent.TASK_ETA_UPDATED, { ...task, etaMinutes: remainingEta });
+
+    return remainingEta;
+  }
+}
+```
+
+---
+
+## 18. API-спецификация
+
+### 18.1. Task API (App-Backend)
+
+```
+# Создание задачи
+POST /api/v1/tasks
+  Body: { hotelId, guestId?, roomNumber, categorySlug, details, priority?, source }
+  Response: 201 { task }
+  Auth: guest, staff, system
+
+# Получение задач гостя
+GET /api/v1/tasks/guest/:guestId
+  Query: ?status=active|history&limit=20&offset=0
+  Response: 200 { tasks[], total }
+  Auth: guest (own), staff, manager
+
+# Получение задач сотрудника
+GET /api/v1/tasks/staff/:staffId
+  Query: ?status=assigned|in_progress|completed&date=2026-03-03
+  Response: 200 { tasks[], total }
+  Auth: staff (own), supervisor, manager
+
+# Получение всех задач (для dashboard)
+GET /api/v1/tasks/hotel/:hotelId
+  Query: ?status, department, priority, floor, assignee, category, dateFrom, dateTo, slaBreached
+  Response: 200 { tasks[], total, stats }
+  Auth: supervisor+
+
+# Получение конкретной задачи
+GET /api/v1/tasks/:taskId
+  Response: 200 { task, statusHistory, notes, photos }
+  Auth: guest (own), assigned staff, supervisor+
+
+# Обновление статуса
+PATCH /api/v1/tasks/:taskId/status
+  Body: { status, reason? }
+  Response: 200 { task }
+  Auth: depends on transition (см. permissions)
+
+# Назначение / переназначение
+PATCH /api/v1/tasks/:taskId/assign
+  Body: { assigneeId?, assigneeGroupId? }
+  Response: 200 { task }
+  Auth: supervisor+
+
+# Отмена
+POST /api/v1/tasks/:taskId/cancel
+  Body: { reason? }
+  Response: 200 { task }
+  Auth: guest (own, if status ≤ ASSIGNED), supervisor+
+
+# Добавление заметки
+POST /api/v1/tasks/:taskId/notes
+  Body: { content, isInternal? }
+  Response: 201 { note }
+  Auth: staff+
+
+# Добавление фото
+POST /api/v1/tasks/:taskId/photos
+  Body: multipart/form-data { photo, type: "before"|"after"|"issue" }
+  Response: 201 { photo }
+  Auth: staff
+
+# Оценка
+POST /api/v1/tasks/:taskId/rate
+  Body: { rating: 1-5, comment? }
+  Response: 200 { task }
+  Auth: guest (own)
+
+# Эскалация
+POST /api/v1/tasks/:taskId/escalate
+  Body: { reason, targetRole? }
+  Response: 200 { task }
+  Auth: staff+
+
+# SSE подписка
+GET /api/v1/sse/tasks
+  Query: ?channels=guest:{id}:tasks,hotel:{id}:sla
+  Response: text/event-stream
+  Auth: any authenticated
+
+# ── Webhook endpoint для внешних TMS ──
+POST /api/v1/webhooks/tms/:hotelId
+  Headers: X-Webhook-Signature
+  Body: { event, taskId, data }
+  Response: 200 OK
+```
+
+### 18.2. Chat → Task integration (Roomie Backend → App Backend)
+
+```typescript
+// Roomie Chat Backend вызывает App Backend для создания задач:
+
+// POST /api/v1/tasks
+// с заголовком X-Internal-Service: roomie-chat
+// и service token для аутентификации
+
+// После создания получает taskId → вставляет task_card в чат
+```
+
+---
+
+## 19. Мультиязычность
+
+### 19.1. Поддерживаемые языки
+
+Минимум: `en`, `uk`, `ru`. Расширяемо через admin-панель.
+
+### 19.2. Что локализуется
+
+| Элемент | Где хранится | Пример |
+|---|---|---|
+| Названия категорий | `TaskCategory.names` (JSON) | `{ "en": "Room Cleaning", "uk": "Прибирання" }` |
+| Описания категорий | `TaskCategory.descriptions` (JSON) | ... |
+| Уточняющие вопросы | `TaskCategory.clarificationRules` (JSON) | `{ prompt: { "en": "How many?", "uk": "Скільки?" } }` |
+| Quick-reply кнопки | Там же | `{ quickReplies: { "en": ["Bath", "Hand"], "uk": ["Банні", "Для рук"] } }` |
+| Системные сообщения | `i18n/*.json` файлы | "Заказ создан", "Сотрудник в пути" |
+| Push-уведомления | `i18n/*.json` файлы | "Готово! Полотенца доставлены" |
+| AI-ответы в чате | Генерируются GPT на языке гостя | Определяется через `GuestContext.language` |
+| Staff App UI | `i18n/*.json` файлы | Язык интерфейса сотрудника |
+| Dashboard | `i18n/*.json` файлы | Язык менеджера |
+
+### 19.3. Определение языка гостя
+
+```typescript
+// Приоритет:
+// 1. Явно выбранный в профиле/приложении
+// 2. Язык бронирования (из PMS)
+// 3. Язык первого сообщения в чате (auto-detect)
+// 4. Язык отеля по умолчанию
+```
+
+---
+
+## 20. Edge Cases
+
+### 20.1. Технические edge cases
+
+| Сценарий | Поведение |
+|---|---|
+| Внешняя TMS недоступна при создании задачи | Задача создаётся locally, `syncStatus = SYNC_ERROR`, retry queue, уведомление менеджеру |
+| Внешняя TMS недоступна при обновлении статуса | Обновляем locally, ставим в retry queue. Гость видит актуальный статус из нашей БД |
+| Конфликт статусов (наш и внешней TMS) | Наша БД — source of truth. При конфликте: log, уведомление менеджеру, наш статус побеждает |
+| Race condition при group assignment | Атомарный UPDATE с WHERE assigneeId IS NULL. Второй сотрудник получает ошибку "Уже взята" |
+| SSE-соединение разорвано | Client auto-reconnect с `Last-Event-ID`. Сервер отправляет пропущенные события |
+| Гость потерял интернет между подтверждением и получением карточки | Retry на клиенте. Idempotency key для предотвращения дубликатов |
+| Два одинаковых запроса подряд (дубликат) | Debounce 5 сек + проверка: если есть активная задача с таким же category+room → спросить "У вас уже есть активный запрос на полотенца. Создать ещё один?" |
+
+### 20.2. Бизнес edge cases
+
+| Сценарий | Поведение |
+|---|---|
+| Гость уже выехал, но запрос активен | При checkout → проверить открытые задачи. Если есть → автоотмена с причиной "guest_checked_out" |
+| Запрос после checkout | AI: "К сожалению, ваш период проживания завершён. Для помощи обратитесь на рецепцию." |
+| Нет сотрудников на смене | Задача создаётся со статусом CREATED. Мгновенная эскалация → duty manager. Гость: "Запрос принят, ожидайте." |
+| Сотрудник принял задачу и "пропал" (offline > 15 мин) | Автопереназначение. Гость: "Мы переназначили ваш запрос." |
+| Гость даёт 1 звезду | AI: "Мне жаль, что вам не понравилось. Что мы можем улучшить?" + автоматическое уведомление duty manager |
+| VIP-гость | Автоматически `priority: HIGH`. Назначается сотрудник с навыком `vip_service`. Более жёсткие SLA. |
+| Гость запрашивает услугу, которой нет | AI: "К сожалению, эта услуга недоступна. Вот что я могу предложить: [список доступных]" |
+| Множественный запрос ("полотенца и уборку") | NLU парсит как два интента → две задачи, но одно подтверждение. Обе видны в Orders. |
+| Повторный запрос ("ещё полотенца") | AI предлагает повторить предыдущий заказ с теми же параметрами |
+| Гость пишет жалобу, а не запрос | Sentiment analysis → если негативный → route to "complaint" category → уведомить duty manager с high priority |
+| Платная услуга, гость отказался платить | Задача не создаётся. AI: "Понял, отменяю. Если передумаете — напишите." |
+
+---
+
+## Приложение A: Конфигурация отеля при подключении
+
+При подключении нового отеля к HotelMol создаётся следующая конфигурация:
+
+```typescript
+interface HotelTaskConfig {
+  hotelId: string;
+
+  // TMS Mode
+  tms: {
+    mode: 'builtin' | 'external' | 'hybrid';
+    connector?: TMSConnectorConfig;
+  };
+
+  // Дефолтные категории (создаются автоматически, можно настроить)
+  categories: TaskCategory[]; // 4 дефолтных + кастомные
+
+  // Департаменты
+  departments: Department[];
+
+  // SLA
+  slaConfigs: SLAConfig[];
+
+  // Рабочие часы (для расчёта доступности)
+  operatingHours: {
+    [departmentSlug: string]: {
+      [dayOfWeek: number]: { from: string; to: string } | null; // null = выходной
+    };
+  };
+
+  // Ценообразование
+  pricingConfig: {
+    currency: string;
+    defaultBillingMethod: 'room_charge' | 'direct_payment' | 'free';
+    categoryPrices: { categorySlug: string; price: number; conditions?: string }[];
+  };
+
+  // Уведомления
+  notificationConfig: {
+    guestPushEnabled: boolean;
+    staffPushEnabled: boolean;
+    slaAlertsEnabled: boolean;
+    ratingRequestEnabled: boolean;
+    ratingRequestDelayMinutes: number; // default: 3
+  };
+
+  // Отображение
+  displayConfig: {
+    showStaffNameToGuest: boolean;        // Показывать ли имя сотрудника гостю
+    showEtaToGuest: boolean;              // Показывать ли ETA
+    showProgressBarInChat: boolean;       // Прогресс-бар в чате (всегда true)
+    ordersTabEnabled: boolean;            // Вкладка Orders (всегда true)
+    servicesTabEnabled: boolean;          // Вкладка Services (кнопки)
+    quickActionsInChat: boolean;          // Quick action bar в чате
+  };
+}
+```
+
+---
+
+## Приложение B: Retry и отказоустойчивость
+
+```typescript
+// Retry queue для синхронизации с внешней TMS
+
+interface SyncRetryJob {
+  id: string;
+  taskId: string;
+  hotelId: string;
+  action: 'create' | 'status_update' | 'assign' | 'cancel' | 'note' | 'photo';
+  data: any;
+  attempts: number;
+  maxAttempts: number;        // default: 5
+  nextRetryAt: Date;
+  createdAt: Date;
+  lastError?: string;
+}
+
+// Retry strategy: exponential backoff
+// Attempt 1: сразу
+// Attempt 2: через 30 сек
+// Attempt 3: через 2 мин
+// Attempt 4: через 10 мин
+// Attempt 5: через 30 мин
+// После 5 попыток: помечаем как SYNC_ERROR, уведомляем менеджера
+
+// При восстановлении связи с TMS — прогоняем все задачи из retry queue
+```
+
+---
+
+## Приложение C: Метрики и аналитика
+
+```typescript
+// Метрики, которые собираются автоматически:
+
+interface TaskMetrics {
+  // Временные
+  timeToAccept: number;         // Секунды от CREATED до ACCEPTED
+  timeToStart: number;          // Секунды от ACCEPTED до IN_PROGRESS
+  timeToComplete: number;       // Секунды от CREATED до COMPLETED
+  executionTime: number;        // Секунды от IN_PROGRESS до COMPLETED
+  totalHoldTime: number;        // Суммарное время в ON_HOLD
+
+  // SLA
+  slaCompliance: boolean;       // Уложились ли в SLA?
+  slaMarginMinutes: number;     // Сколько минут в запасе (или отрицательно если нарушен)
+
+  // Качество
+  guestRating: number | null;   // 1-5
+  wasEscalated: boolean;
+  wasReassigned: boolean;
+  escalationCount: number;
+
+  // Источник
+  source: TaskSource;
+  categorySlug: string;
+  departmentSlug: string;
+  assigneeId: string;
+  hotelId: string;
+}
+```

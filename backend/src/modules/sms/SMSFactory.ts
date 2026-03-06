@@ -2,6 +2,7 @@ import { HotelSMSConfig } from '@prisma/client';
 import { BaseSMSAdapter } from './BaseSMSAdapter';
 import { TwilioAdapter } from './adapters/TwilioAdapter';
 import { TurboSMSAdapter } from './adapters/TurboSMSAdapter';
+import { LogAdapter } from './adapters/LogAdapter';
 import { SMSError } from './types';
 
 export class SMSFactory {
@@ -11,6 +12,8 @@ export class SMSFactory {
         return new TwilioAdapter(config);
       case 'turbosms':
         return new TurboSMSAdapter(config);
+      case 'log':
+        return new LogAdapter(config);
       default:
         throw new SMSError(
           `Unsupported SMS provider: ${config.provider}`,

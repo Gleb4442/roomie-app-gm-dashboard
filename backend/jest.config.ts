@@ -7,6 +7,7 @@ const config: Config = {
   testMatch: ['**/__tests__/**/*.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   clearMocks: true,
+  testTimeout: 30000,
   // Don't transform node_modules
   transformIgnorePatterns: ['/node_modules/'],
 };

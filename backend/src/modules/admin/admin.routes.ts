@@ -70,6 +70,13 @@ router.delete('/hotels/:hotelId/tms', adminController.deleteTmsConfig);
 router.post('/hotels/:hotelId/tms/test', adminController.testTmsConnection);
 router.put('/hotels/:hotelId/tms/mapping', adminController.updateTmsMapping);
 
+// ── Staff ─────────────────────────────────────────────────────────────────────
+router.get('/hotels/:hotelId/staff', adminController.listStaff);
+router.post('/hotels/:hotelId/staff', adminController.createStaff);
+router.patch('/hotels/:hotelId/staff/:staffId', adminController.updateStaff);
+router.delete('/hotels/:hotelId/staff/:staffId', adminController.deactivateStaff);
+router.post('/hotels/:hotelId/staff/:staffId/reset-pin', adminController.resetStaffPin);
+
 // ── Monitoring ────────────────────────────────────────────────────────────────
 router.get('/monitoring/overview', adminController.monitoringOverview);
 router.get('/monitoring/sms-errors', adminController.monitoringSmsErrors);

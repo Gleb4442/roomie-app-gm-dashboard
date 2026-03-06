@@ -2,6 +2,7 @@ import { HotelPMSConfig } from '@prisma/client';
 import { BasePMSAdapter } from './BasePMSAdapter';
 import { ServioAdapter } from './adapters/ServioAdapter';
 import { EasyMSAdapter } from './adapters/EasyMSAdapter';
+import { MockPMSAdapter } from './adapters/MockPMSAdapter';
 import { PMSError } from './types';
 
 export class PMSFactory {
@@ -11,6 +12,8 @@ export class PMSFactory {
         return new ServioAdapter(config);
       case 'easyms':
         return new EasyMSAdapter(config);
+      case 'mock':
+        return new MockPMSAdapter(config);
       default:
         throw new PMSError(
           `Unsupported PMS provider: ${config.pmsType}`,

@@ -65,6 +65,12 @@ enum JourneyStage {
   BETWEEN_STAYS
 }
 
+enum LateCheckoutStatus {
+  PENDING
+  APPROVED
+  DECLINED
+}
+
 enum ServiceSource {
   MANUAL
   POS_SYNC
@@ -192,11 +198,15 @@ model GuestStay {
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
-  guest             GuestAccount      @relation(fields: [guestId], references: [id])
-  hotel             Hotel             @relation(fields: [hotelId], references: [id])
-  stageTransitions  StageTransition[]
-  smsLogs           SMSLog[]
-  serviceRequests   ServiceRequest[]
+  extensionRequestedUntil DateTime?
+  extensionStatus         LateCheckoutStatus?
+
+  guest                GuestAccount        @relation(fields: [guestId], references: [id])
+  hotel                Hotel               @relation(fields: [hotelId], references: [id])
+  stageTransitions     StageTransition[]
+  smsLogs              SMSLog[]
+  serviceRequests      ServiceRequest[]
+  lateCheckoutRequests LateCheckoutRequest[]
 
   @@map("guest_stays")
 }
@@ -215,6 +225,24 @@ model AppOpen {
   hotel                   Hotel?        @relation(fields: [hotelId], references: [id])
 
   @@map("app_opens")
+}
+
+// ──── Late Checkout Requests ──────────────────────
+
+model LateCheckoutRequest {
+  id            String             @id @default(uuid())
+  stayId        String
+  requestedTime String             // e.g. "13:00"
+  status        LateCheckoutStatus @default(PENDING)
+  notes         String?
+  taskId        String?            // InternalTask.id created for front office
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  stay          GuestStay          @relation(fields: [stayId], references: [id])
+
+  @@index([stayId])
+  @@map("late_checkout_requests")
 }
 
 // ──── PMS Config ─────────────────────────────────

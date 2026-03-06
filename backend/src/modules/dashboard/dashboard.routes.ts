@@ -28,7 +28,9 @@ router.get('/hotels/:hotelId/guests', dashboardController.guests);
 router.get('/hotels/:hotelId/orders', dashboardController.orders);
 router.get('/hotels/:hotelId/orders/stream', dashboardController.ordersStream);
 
-// QR (read-only)
+// QR
+router.post('/hotels/:hotelId/qr/generate', dashboardController.generateQR);
+router.post('/hotels/:hotelId/qr/generate-bulk', dashboardController.generateQRBulk);
 router.get('/hotels/:hotelId/qr', dashboardController.listQR);
 router.get('/hotels/:hotelId/qr/download-all', dashboardController.downloadAllQRZip);
 router.get('/hotels/:hotelId/qr/:qrId/pdf', dashboardController.downloadQRPdf);

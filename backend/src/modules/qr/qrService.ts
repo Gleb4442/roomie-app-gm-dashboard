@@ -30,7 +30,8 @@ class QRService {
   async generateForRoom(hotelId: string, roomNumber: string, label?: string): Promise<QRCodeModel> {
     const hotel = await prisma.hotel.findUniqueOrThrow({ where: { id: hotelId } });
 
-    const deepLink = `roomie://open?hotelId=${hotelId}&room=${encodeURIComponent(roomNumber)}`;
+    // Deep link: source=qr_room so the mobile entry router handles it correctly
+    const deepLink = `roomie://open?source=qr_room&hotel=${hotelId}&room=${encodeURIComponent(roomNumber)}`;
 
     // Upsert to handle re-generation
     const existing = await prisma.qRCode.findUnique({
@@ -56,8 +57,9 @@ class QRService {
     ensureDir(hotelDir);
 
     // Generate PNG (1024x1024, error correction H)
+    // Encodes the HTTPS fallback URL so the QR works even if the app isn't installed
     const pngPath = path.join(hotelDir, `${qrRecord.id}.png`);
-    await QRCode.toFile(pngPath, deepLink, {
+    await QRCode.toFile(pngPath, `${env.appBaseUrl}/qr/${qrRecord.id}`, {
       errorCorrectionLevel: 'H',
       width: 1024,
       margin: 2,

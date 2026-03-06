@@ -14,6 +14,10 @@ import {
 } from './admin.service';
 import { qrService } from '../qr/qrService';
 import { env } from '../../config/environment';
+import { listStaffMembers, createStaffMember } from '../staff/staff.service';
+import { prisma } from '../../config/database';
+import bcrypt from 'bcryptjs';
+import { AppError } from '../../shared/middleware/errorHandler';
 
 const upload = multer({ dest: path.join(process.cwd(), env.uploadsDir, 'logos') });
 
@@ -262,6 +266,66 @@ export const adminController = {
       const manager = await adminManagerService.linkHotels(req.params.managerId as string, hotelIds);
       const { passwordHash: _, ...safe } = manager;
       res.json({ success: true, data: safe });
+    } catch (err) { next(err); }
+  },
+
+  // ── Staff ─────────────────────────────────────────────────────────────────
+  async listStaff(req: Request, res: Response, next: NextFunction) {
+    try {
+      const staff = await listStaffMembers(req.params.hotelId as string);
+      res.json({ success: true, data: staff });
+    } catch (err) { next(err); }
+  },
+
+  async createStaff(req: Request, res: Response, next: NextFunction) {
+    try {
+      const member = await createStaffMember({ hotelId: req.params.hotelId as string, ...req.body });
+      res.status(201).json({ success: true, data: member });
+    } catch (err) { next(err); }
+  },
+
+  async updateStaff(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { staffId, hotelId } = req.params as { staffId: string; hotelId: string };
+      const existing = await prisma.staffMember.findFirst({ where: { id: staffId, hotelId } });
+      if (!existing) throw new AppError(404, 'Staff member not found');
+      const updates: Record<string, unknown> = { ...req.body };
+      if (updates.password) {
+        updates.passwordHash = await bcrypt.hash(updates.password as string, 10);
+        delete updates.password;
+      }
+      const member = await prisma.staffMember.update({
+        where: { id: staffId },
+        data: updates,
+        select: {
+          id: true, email: true, firstName: true, lastName: true, phone: true,
+          role: true, department: true, isActive: true, assignedFloor: true,
+        },
+      });
+      res.json({ success: true, data: member });
+    } catch (err) { next(err); }
+  },
+
+  async deactivateStaff(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { staffId, hotelId } = req.params as { staffId: string; hotelId: string };
+      const existing = await prisma.staffMember.findFirst({ where: { id: staffId, hotelId } });
+      if (!existing) throw new AppError(404, 'Staff member not found');
+      await prisma.staffMember.update({ where: { id: staffId }, data: { isActive: false } });
+      res.json({ success: true, message: 'Staff member deactivated' });
+    } catch (err) { next(err); }
+  },
+
+  async resetStaffPin(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { staffId, hotelId } = req.params as { staffId: string; hotelId: string };
+      const pin: string = req.body.pin;
+      if (!pin || pin.length < 4) throw new AppError(400, 'PIN must be at least 4 digits');
+      const existing = await prisma.staffMember.findFirst({ where: { id: staffId, hotelId } });
+      if (!existing) throw new AppError(404, 'Staff member not found');
+      const pinHash = await bcrypt.hash(pin, 10);
+      await prisma.staffMember.update({ where: { id: staffId }, data: { pin: pinHash } });
+      res.json({ success: true, message: 'PIN updated' });
     } catch (err) { next(err); }
   },
 

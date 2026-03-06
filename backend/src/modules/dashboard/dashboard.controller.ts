@@ -92,7 +92,27 @@ export const dashboardController = {
     });
   },
 
-  // ── QR (read-only) ─────────────────────────────────────────────────────────
+  // ── QR ─────────────────────────────────────────────────────────────────────
+  async generateQR(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const { roomNumber, label } = req.body as { roomNumber: string; label?: string };
+      if (!roomNumber) return res.status(400).json({ success: false, error: 'roomNumber is required' });
+      const qr = await qrService.generateForRoom(req.params.hotelId as string, roomNumber, label);
+      res.status(201).json({ success: true, data: qr });
+    } catch (err) { next(err); }
+  },
+
+  async generateQRBulk(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const { rooms } = req.body as { rooms: { number: string; label?: string }[] };
+      if (!Array.isArray(rooms) || !rooms.length) {
+        return res.status(400).json({ success: false, error: 'rooms array is required' });
+      }
+      const result = await qrService.generateBulk(req.params.hotelId as string, rooms);
+      res.status(201).json({ success: true, data: { count: result.qrCodes.length } });
+    } catch (err) { next(err); }
+  },
+
   async listQR(req: DashboardRequest, res: Response, next: NextFunction) {
     try {
       const qrCodes = await qrService.getByHotel(req.params.hotelId as string);
