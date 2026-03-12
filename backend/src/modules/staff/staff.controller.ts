@@ -264,6 +264,15 @@ export async function savePushToken(req: StaffRequest, res: Response) {
   }
 }
 
+export async function deleteAccount(req: StaffRequest, res: Response) {
+  try {
+    await staffService.deactivateStaffAccount(req.staff!.staffId);
+    res.json({ deleted: true });
+  } catch {
+    res.status(500).json({ error: 'Failed to delete account' });
+  }
+}
+
 // ── Dashboard: Staff Stats + PIN ──────────────────────────────
 
 export async function getStaffStats(req: Request, res: Response) {

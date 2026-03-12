@@ -6,5 +6,6 @@ const router = Router();
 
 router.get('/current-stay', authenticateGuestJWT, journeyController.getCurrentStay);
 router.post('/update-stage', authenticateGuestJWT, journeyController.updateStage);
+router.get('/profile-context', authenticateGuestJWT, journeyController.getProfileContext);
 
 export default router;

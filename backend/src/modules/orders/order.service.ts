@@ -300,5 +300,6 @@ export async function processAutoTimerStatuses() {
       where: { id: order.id },
       data: { status: 'DELIVERED', deliveredAt: now },
     });
+
   }
 }

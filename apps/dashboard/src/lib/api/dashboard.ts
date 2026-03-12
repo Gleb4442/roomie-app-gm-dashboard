@@ -7,6 +7,8 @@ import type {
   QRCode,
   StatsData,
   SMSLogsResponse,
+  HotelSettings,
+  BookingsResponse,
   ServiceRequestsResponse,
   ServiceStatsData,
   ServiceRequestStatus,
@@ -22,6 +24,11 @@ export const dashboardApi = {
   login: async (username: string, password: string) => {
     const res = await api.post('/api/dashboard/auth/login', { username, password });
     return res.data.data as { token: string; manager: { id: string; username: string; role: string; hotels: Array<{ id: string; name: string; slug: string }> } };
+  },
+
+  deleteAccount: async (token: string) => {
+    const res = await api.delete('/api/dashboard/me', { headers: authHeader(token) });
+    return res.data;
   },
 
   getOverview: async (hotelId: string, token: string): Promise<OverviewData> => {
@@ -87,6 +94,178 @@ export const dashboardApi = {
     params: { status?: string; page?: number; limit?: number }
   ): Promise<SMSLogsResponse> => {
     const res = await api.get(`/api/dashboard/hotels/${hotelId}/sms-logs`, {
+      headers: authHeader(token),
+      params,
+    });
+    return res.data.data;
+  },
+
+  getSettings: async (hotelId: string, token: string): Promise<HotelSettings> => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/settings`, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  updateSettings: async (hotelId: string, token: string, data: Partial<HotelSettings>): Promise<HotelSettings> => {
+    const res = await api.put(`/api/dashboard/hotels/${hotelId}/settings`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  // ── Guest Detail ────────────────────────────────────────
+
+  getGuestDetail: async (hotelId: string, guestId: string, token: string) => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/guests/${guestId}`, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  addGuestTag: async (hotelId: string, guestId: string, tag: string, token: string) => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/guests/${guestId}/tags`, { tag }, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  removeGuestTag: async (hotelId: string, guestId: string, tagId: string, token: string) => {
+    const res = await api.delete(`/api/dashboard/hotels/${hotelId}/guests/${guestId}/tags/${tagId}`, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  // ── Reviews ────────────────────────────────────────────
+
+  getReviews: async (hotelId: string, token: string, params: { rating?: number; page?: number; limit?: number }) => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/reviews`, {
+      headers: authHeader(token),
+      params,
+    });
+    return res.data.data;
+  },
+
+  replyReview: async (hotelId: string, reviewId: string, managerReply: string, token: string) => {
+    const res = await api.put(`/api/dashboard/hotels/${hotelId}/reviews/${reviewId}/reply`, { managerReply }, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  // ── Offers ─────────────────────────────────────────────
+
+  getOffers: async (hotelId: string, token: string, params: { status?: string; page?: number; limit?: number }) => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/offers`, {
+      headers: authHeader(token),
+      params,
+    });
+    return res.data.data;
+  },
+
+  createOffer: async (hotelId: string, token: string, data: Record<string, unknown>) => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/offers`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  updateOffer: async (hotelId: string, offerId: string, token: string, data: Record<string, unknown>) => {
+    const res = await api.put(`/api/dashboard/hotels/${hotelId}/offers/${offerId}`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  deleteOffer: async (hotelId: string, offerId: string, token: string) => {
+    const res = await api.delete(`/api/dashboard/hotels/${hotelId}/offers/${offerId}`, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  // ── Push Notifications ────────────────────────────────────
+
+  getNotificationHistory: async (hotelId: string, token: string, params: { page?: number; limit?: number }) => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/notifications`, {
+      headers: authHeader(token),
+      params,
+    });
+    return res.data.data;
+  },
+
+  sendNotification: async (hotelId: string, token: string, data: { title: string; body: string; guestId: string }) => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/notifications/send`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  broadcastNotification: async (hotelId: string, token: string, data: { title: string; body: string; targetStage?: string }) => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/notifications/broadcast`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  // ── Service Catalog ──────────────────────────────────────
+
+  getServiceCatalog: async (hotelId: string, token: string): Promise<ServiceCategoryFull[]> => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/service-catalog`, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  createServiceCategory: async (hotelId: string, token: string, data: Partial<ServiceCategoryFull>): Promise<ServiceCategoryFull> => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/service-catalog`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  updateServiceCategory: async (hotelId: string, catId: string, token: string, data: Partial<ServiceCategoryFull>): Promise<ServiceCategoryFull> => {
+    const res = await api.put(`/api/dashboard/hotels/${hotelId}/service-catalog/${catId}`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  deleteServiceCategory: async (hotelId: string, catId: string, token: string) => {
+    const res = await api.delete(`/api/dashboard/hotels/${hotelId}/service-catalog/${catId}`, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  createServiceItem: async (hotelId: string, catId: string, token: string, data: Partial<ServiceItemFull>): Promise<ServiceItemFull> => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/service-catalog/${catId}/items`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  updateServiceItem: async (hotelId: string, catId: string, itemId: string, token: string, data: Partial<ServiceItemFull>): Promise<ServiceItemFull> => {
+    const res = await api.put(`/api/dashboard/hotels/${hotelId}/service-catalog/${catId}/items/${itemId}`, data, {
+      headers: authHeader(token),
+    });
+    return res.data.data;
+  },
+
+  deleteServiceItem: async (hotelId: string, catId: string, itemId: string, token: string) => {
+    const res = await api.delete(`/api/dashboard/hotels/${hotelId}/service-catalog/${catId}/items/${itemId}`, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  getBookings: async (
+    hotelId: string,
+    token: string,
+    params: { stage?: string; search?: string; from?: string; to?: string; page?: number; limit?: number }
+  ): Promise<BookingsResponse> => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/bookings`, {
       headers: authHeader(token),
       params,
     });
@@ -284,6 +463,44 @@ export const dashboardApi = {
 
   getRoomsSSEUrl: (hotelId: string, token: string): string =>
     `${getApiBase()}/api/v1/sse/tasks?channels=rooms:${hotelId}&token=${token}`,
+
+  // ── Loyalty ────────────────────────────────────────────────
+
+  getLoyaltySettings: async (hotelId: string, token: string): Promise<LoyaltySettings> => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/loyalty/settings`, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  updateLoyaltySettings: async (hotelId: string, token: string, data: Partial<LoyaltySettings>): Promise<LoyaltySettings> => {
+    const res = await api.put(`/api/dashboard/hotels/${hotelId}/loyalty/settings`, data, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  getLoyaltyMembers: async (hotelId: string, token: string, params?: { page?: number; limit?: number }): Promise<LoyaltyMembersResponse> => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/loyalty/members`, {
+      headers: authHeader(token),
+      params,
+    });
+    return res.data;
+  },
+
+  getLoyaltyStats: async (hotelId: string, token: string): Promise<LoyaltyStats> => {
+    const res = await api.get(`/api/dashboard/hotels/${hotelId}/loyalty/stats`, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
+
+  manualLoyaltyAdjust: async (hotelId: string, token: string, data: { guestId: string; nights: number; description: string }) => {
+    const res = await api.post(`/api/dashboard/hotels/${hotelId}/loyalty/adjust`, data, {
+      headers: authHeader(token),
+    });
+    return res.data;
+  },
 };
 
 // ── Staff TMS Types ──────────────────────────────────────────
@@ -410,4 +627,85 @@ export interface BulkCreateRoomItem {
   floor: number;
   roomType?: string;
   maxOccupancy?: number;
+}
+
+// ── Service Catalog Types ──────────────────────────────────────
+
+export interface ServiceItemFull {
+  id: string;
+  categoryId: string;
+  name: string;
+  nameUk?: string;
+  nameEn?: string;
+  description?: string;
+  icon?: string;
+  photoUrl?: string;
+  price: number;
+  currency: string;
+  isActive: boolean;
+  sortOrder: number;
+  maxQuantity: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServiceCategoryFull {
+  id: string;
+  hotelId: string;
+  name: string;
+  nameUk?: string;
+  nameEn?: string;
+  slug: string;
+  icon?: string;
+  description?: string;
+  sortOrder: number;
+  isActive: boolean;
+  requiresRoom: boolean;
+  requiresTimeSlot: boolean;
+  autoAccept: boolean;
+  estimatedMinutes?: number;
+  items: ServiceItemFull[];
+  _count: { requests: number };
+}
+
+// ── Loyalty Types ─────────────────────────────────────────────
+
+export interface LoyaltySettings {
+  id: string;
+  hotelId: string;
+  isEnabled: boolean;
+  programName: string;
+  silverNightsRequired: number;
+  goldNightsRequired: number;
+  platinumNightsRequired: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LoyaltyAccount {
+  id: string;
+  guestId: string;
+  hotelId: string;
+  nightsThisYear: number;
+  totalNights: number;
+  tier: 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM';
+  guest: {
+    id: string;
+    firstName: string;
+    lastName?: string;
+    email?: string;
+    phone?: string;
+  };
+}
+
+export interface LoyaltyMembersResponse {
+  accounts: LoyaltyAccount[];
+  total: number;
+}
+
+export interface LoyaltyStats {
+  totalMembers: number;
+  totalNightsThisYear: number;
+  totalLifetimeNights: number;
+  byTier: Record<string, number>;
 }

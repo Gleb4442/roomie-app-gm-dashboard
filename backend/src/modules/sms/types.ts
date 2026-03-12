@@ -22,6 +22,7 @@ export type TemplateKey =
   | 'booking_confirmation'
   | 'precheckin_invite'
   | 'app_download'
+  | 'pre_arrival_reminder'
   | 'checkin_welcome'
   | 'checkout_thanks';
 

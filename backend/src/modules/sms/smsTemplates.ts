@@ -30,6 +30,17 @@ const templates: Record<TemplateKey, Record<string, TemplateRenderer>> = {
       `${ctx.guestName}, laden Sie die ${ctx.hotelName} App herunter für Zimmerservice, Concierge-Chat und mehr: ${ctx.appLink}`,
   },
 
+  pre_arrival_reminder: {
+    uk: (ctx) =>
+      `${ctx.guestName}, нагадуємо: ваш заїзд до ${ctx.hotelName} — ${ctx.checkIn}. Пройдіть онлайн-реєстрацію заздалегідь: ${ctx.preCheckinUrl || ctx.appLink}`,
+    en: (ctx) =>
+      `${ctx.guestName}, reminder: your check-in at ${ctx.hotelName} is on ${ctx.checkIn}. Complete online check-in in advance: ${ctx.preCheckinUrl || ctx.appLink}`,
+    de: (ctx) =>
+      `${ctx.guestName}, Erinnerung: Ihr Check-in im ${ctx.hotelName} ist am ${ctx.checkIn}. Erledigen Sie den Online-Check-in vorab: ${ctx.preCheckinUrl || ctx.appLink}`,
+    ru: (ctx) =>
+      `${ctx.guestName}, напоминаем: ваш заезд в ${ctx.hotelName} — ${ctx.checkIn}. Пройдите онлайн-регистрацию заранее: ${ctx.preCheckinUrl || ctx.appLink}`,
+  },
+
   checkin_welcome: {
     uk: (ctx) =>
       `Ласкаво просимо до ${ctx.hotelName}, ${ctx.guestName}! Ваш номер: ${ctx.roomNumber}. Все послуги доступні в додатку: ${ctx.appLink}`,

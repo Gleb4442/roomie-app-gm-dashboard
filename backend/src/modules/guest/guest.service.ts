@@ -5,6 +5,7 @@ import { env } from '../../config/environment';
 import { sendOtpSms } from '../../shared/utils/smsOtp';
 import { AppError } from '../../shared/middleware/errorHandler';
 import { EntrySource, Prisma } from '@prisma/client';
+import { computeSubStage } from '../journey/journey.service';
 
 const OTP_TTL = 300; // 5 minutes
 const OTP_PREFIX = 'otp:phone:';
@@ -151,8 +152,9 @@ export const guestService = {
       return existing;
     }
 
+    const subStage = computeSubStage('PRE_ARRIVAL', null, null);
     const stay = await prisma.guestStay.create({
-      data: { guestId, hotelId, bookingRef, stage: 'PRE_ARRIVAL', enteredVia: 'sms_booking' },
+      data: { guestId, hotelId, bookingRef, stage: 'PRE_ARRIVAL', subStage, enteredVia: 'sms_booking' },
       include: { hotel: true },
     });
 
@@ -204,6 +206,44 @@ export const guestService = {
       accessToken, refreshToken,
       guest: { id: guest.id, phone: guest.phone, firstName: guest.firstName, lastName: guest.lastName },
     };
+  },
+
+  async deleteAccount(guestId: string) {
+    const guest = await prisma.guestAccount.findUnique({ where: { id: guestId } });
+    if (!guest) throw new AppError(404, 'Guest not found');
+
+    // Get stay IDs to delete late checkout requests (linked via stayId, not guestId)
+    const stays = await prisma.guestStay.findMany({ where: { guestId }, select: { id: true } });
+    const stayIds = stays.map(s => s.id);
+
+    // Get dependent IDs for cascading deletes
+    const orders = await prisma.order.findMany({ where: { guestId }, select: { id: true } });
+    const orderIds = orders.map(o => o.id);
+    const loyaltyAccounts = await prisma.loyaltyAccount.findMany({ where: { guestId }, select: { id: true } });
+    const loyaltyAccountIds = loyaltyAccounts.map(a => a.id);
+
+    await prisma.$transaction([
+      // Loyalty
+      ...(loyaltyAccountIds.length > 0 ? [prisma.loyaltyTransaction.deleteMany({ where: { accountId: { in: loyaltyAccountIds } } })] : []),
+      prisma.loyaltyAccount.deleteMany({ where: { guestId } }),
+      // Late checkout requests (via stayId)
+      ...(stayIds.length > 0 ? [prisma.lateCheckoutRequest.deleteMany({ where: { stayId: { in: stayIds } } })] : []),
+      // Service requests (items cascade automatically)
+      prisma.serviceRequest.deleteMany({ where: { guestId } }),
+      // Order items then orders
+      ...(orderIds.length > 0 ? [prisma.orderItem.deleteMany({ where: { orderId: { in: orderIds } } })] : []),
+      prisma.order.deleteMany({ where: { guestId } }),
+      // Nullify optional references
+      prisma.appOpen.deleteMany({ where: { guestId } }),
+      prisma.sMSLog.updateMany({ where: { guestId }, data: { guestId: null } }),
+      prisma.qRScan.updateMany({ where: { guestId }, data: { guestId: null } }),
+      // Core guest data
+      prisma.guestStay.deleteMany({ where: { guestId } }),
+      prisma.guestHotel.deleteMany({ where: { guestId } }),
+      prisma.guestAccount.delete({ where: { id: guestId } }),
+    ]);
+
+    return { deleted: true };
   },
 };
 

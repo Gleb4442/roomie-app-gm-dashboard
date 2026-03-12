@@ -42,6 +42,7 @@ router.get('/hotels/:hotelId/pos', adminController.getPosConfig);
 router.put('/hotels/:hotelId/pos', adminController.upsertPosConfig);
 router.post('/hotels/:hotelId/pos/test', adminController.testPosConnection);
 router.post('/hotels/:hotelId/pos/sync-menu', adminController.syncPosMenu);
+router.get('/hotels/:hotelId/pos/categories', adminController.getPosCategories);
 
 // ── QR ────────────────────────────────────────────────────────────────────────
 router.get('/hotels/:hotelId/qr', adminController.listQR);
@@ -96,6 +97,14 @@ router.delete('/hotels/:hotelId/templates/:templateId', adminController.deactiva
 // ── TMS Stats ─────────────────────────────────────────────────────────────────
 router.get('/hotels/:hotelId/tms/stats', adminController.getTmsStats);
 
+// ── Hotel Chains ──────────────────────────────────────────────────────────────
+router.get('/chains', adminController.listChains);
+router.post('/chains', adminController.createChain);
+router.get('/chains/:chainId', adminController.getChain);
+router.delete('/chains/:chainId', adminController.deleteChain);
+router.put('/hotels/:hotelId/chain', adminController.setHotelChain);
+router.get('/hotels/search', adminController.searchHotelsByName);
+
 // ── Monitoring ────────────────────────────────────────────────────────────────
 router.get('/monitoring/overview', adminController.monitoringOverview);
 router.get('/monitoring/sms-errors', adminController.monitoringSmsErrors);
@@ -106,5 +115,15 @@ router.post('/managers', adminController.createManager);
 router.put('/managers/:managerId', adminController.updateManager);
 router.delete('/managers/:managerId', adminController.deleteManager);
 router.post('/managers/:managerId/hotels', adminController.linkManagerHotels);
+
+// ── Widget Config ─────────────────────────────────────────────────────────────
+router.get('/hotels/:hotelId/widget', adminController.getWidgetConfig);
+router.put('/hotels/:hotelId/widget', adminController.updateWidgetConfig);
+router.post('/hotels/:hotelId/widget/rooms', adminController.addWidgetRoom);
+router.put('/hotels/:hotelId/widget/rooms/:roomId', adminController.updateWidgetRoom);
+router.delete('/hotels/:hotelId/widget/rooms/:roomId', adminController.deleteWidgetRoom);
+router.post('/hotels/:hotelId/widget/services', adminController.addWidgetService);
+router.put('/hotels/:hotelId/widget/services/:serviceId', adminController.updateWidgetService);
+router.delete('/hotels/:hotelId/widget/services/:serviceId', adminController.deleteWidgetService);
 
 export default router;

@@ -8,6 +8,13 @@ import {
   dashboardOrdersService,
   dashboardStatsService,
   dashboardSmsLogsService,
+  dashboardBookingsService,
+  dashboardSettingsService,
+  dashboardServiceCatalogService,
+  dashboardGuestDetailService,
+  dashboardReviewsService,
+  dashboardOffersService,
+  dashboardNotificationsService,
 } from './dashboard.service';
 import { qrService } from '../qr/qrService';
 import { qrPdfGenerator } from '../qr/qrPdfGenerator';
@@ -21,6 +28,15 @@ export const dashboardController = {
     try {
       const { username, password } = req.body;
       const result = await dashboardAuthService.login(username, password);
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
+  },
+
+  // ── Delete Account ─────────────────────────────────────────────────────────
+  async deleteAccount(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const managerId = req.manager!.id;
+      const result = await dashboardAuthService.deleteAccount(managerId);
       res.json({ success: true, data: result });
     } catch (err) { next(err); }
   },
@@ -246,6 +262,21 @@ export const dashboardController = {
     });
   },
 
+  // ── Bookings ──────────────────────────────────────────────────────────────
+  async bookings(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardBookingsService.list(req.params.hotelId as string, {
+        stage: req.query.stage as string,
+        search: req.query.search as string,
+        from: req.query.from as string,
+        to: req.query.to as string,
+        page: parseInt(req.query.page as string || '1', 10),
+        limit: parseInt(req.query.limit as string || '20', 10),
+      });
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
   async serviceStats(req: DashboardRequest, res: Response, next: NextFunction) {
     try {
       const hotelId = req.params.hotelId as string;
@@ -255,6 +286,179 @@ export const dashboardController = {
         : new Date(now.getFullYear(), now.getMonth(), 1);
       const to = req.query.to ? new Date(req.query.to as string) : now;
       const data = await taskStaffService.getStats(hotelId, from, to);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  // ── Hotel Settings ────────────────────────────────────────────────────────
+  async getSettings(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardSettingsService.get(req.params.hotelId as string);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async updateSettings(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardSettingsService.update(req.params.hotelId as string, req.body);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  // ── Service Catalog ─────────────────────────────────────────────────────────
+  async serviceCatalog(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardServiceCatalogService.list(req.params.hotelId as string);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async createServiceCategory(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardServiceCatalogService.createCategory(req.params.hotelId as string, req.body);
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async updateServiceCategory(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardServiceCatalogService.updateCategory(req.params.catId as string, req.body);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async deleteServiceCategory(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      await dashboardServiceCatalogService.deleteCategory(req.params.catId as string);
+      res.json({ success: true, message: 'Category deleted' });
+    } catch (err) { next(err); }
+  },
+
+  async createServiceItem(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardServiceCatalogService.createItem(req.params.catId as string, req.body);
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async updateServiceItem(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardServiceCatalogService.updateItem(req.params.itemId as string, req.body);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async deleteServiceItem(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      await dashboardServiceCatalogService.deleteItem(req.params.itemId as string);
+      res.json({ success: true, message: 'Item deleted' });
+    } catch (err) { next(err); }
+  },
+
+  // ── Guest Detail ──────────────────────────────────────────────────────────
+  async guestDetail(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardGuestDetailService.get(req.params.hotelId as string, req.params.guestId as string);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async addGuestTag(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const { tag } = req.body;
+      const data = await dashboardGuestDetailService.addTag(req.params.hotelId as string, req.params.guestId as string, tag);
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async removeGuestTag(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      await dashboardGuestDetailService.removeTag(req.params.tagId as string);
+      res.json({ success: true, message: 'Tag removed' });
+    } catch (err) { next(err); }
+  },
+
+  // ── Reviews ───────────────────────────────────────────────────────────────
+  async reviews(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardReviewsService.list(req.params.hotelId as string, {
+        rating: req.query.rating ? parseInt(req.query.rating as string) : undefined,
+        page: parseInt(req.query.page as string || '1', 10),
+        limit: parseInt(req.query.limit as string || '20', 10),
+      });
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async replyReview(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardReviewsService.reply(req.params.reviewId as string, req.body.managerReply);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  // ── Offers ────────────────────────────────────────────────────────────────
+  async offers(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardOffersService.list(req.params.hotelId as string, {
+        status: req.query.status as string,
+        page: parseInt(req.query.page as string || '1', 10),
+        limit: parseInt(req.query.limit as string || '20', 10),
+      });
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async createOffer(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardOffersService.create(req.params.hotelId as string, req.body);
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async updateOffer(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardOffersService.update(req.params.offerId as string, req.body);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async deleteOffer(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      await dashboardOffersService.delete(req.params.offerId as string);
+      res.json({ success: true, message: 'Offer deleted' });
+    } catch (err) { next(err); }
+  },
+
+  // ── Push Notifications ─────────────────────────────────────────────────────
+  async sendNotification(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const { title, body, guestId } = req.body;
+      if (!title || !body) return res.status(400).json({ success: false, error: 'title and body are required' });
+      const data = await dashboardNotificationsService.sendToGuest(
+        req.params.hotelId as string, guestId, title, body, req.manager!.id,
+      );
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async broadcastNotification(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const { title, body, targetStage } = req.body;
+      if (!title || !body) return res.status(400).json({ success: false, error: 'title and body are required' });
+      const data = await dashboardNotificationsService.broadcast(
+        req.params.hotelId as string, title, body, req.manager!.id, targetStage,
+      );
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  },
+
+  async notificationHistory(req: DashboardRequest, res: Response, next: NextFunction) {
+    try {
+      const data = await dashboardNotificationsService.history(req.params.hotelId as string, {
+        page: parseInt(req.query.page as string || '1', 10),
+        limit: parseInt(req.query.limit as string || '20', 10),
+      });
       res.json({ success: true, data });
     } catch (err) { next(err); }
   },

@@ -4,6 +4,7 @@ import path from 'path';
 import {
   adminAuthService,
   adminHotelService,
+  adminChainService,
   adminPmsService,
   adminSmsService,
   adminPosService,
@@ -11,6 +12,7 @@ import {
   adminManagerService,
   adminServiceCategoryService,
   adminTmsService,
+  adminWidgetService,
 } from './admin.service';
 import { qrService } from '../qr/qrService';
 import { env } from '../../config/environment';
@@ -178,6 +180,12 @@ export const adminController = {
     } catch (err) { next(err); }
   },
 
+  async getPosCategories(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json({ success: true, data: await adminPosService.getCategories(req.params.hotelId as string) });
+    } catch (err) { next(err); }
+  },
+
   // ── QR ────────────────────────────────────────────────────────────────────
   async generateQR(req: Request, res: Response, next: NextFunction) {
     try {
@@ -189,7 +197,14 @@ export const adminController = {
 
   async generateQRBulk(req: Request, res: Response, next: NextFunction) {
     try {
-      const { rooms } = req.body;
+      const rawRooms = req.body.rooms;
+      if (!Array.isArray(rawRooms) || !rawRooms.length) {
+        return res.status(400).json({ success: false, error: 'rooms array is required' });
+      }
+      // Normalize: accept both string[] and {number, label?}[] from different callers
+      const rooms = rawRooms.map((r: string | { number: string; label?: string }) =>
+        typeof r === 'string' ? { number: r } : r,
+      );
       const result = await qrService.generateBulk(req.params.hotelId as string, rooms);
       res.status(201).json({ success: true, data: result });
     } catch (err) { next(err); }
@@ -520,6 +535,102 @@ export const adminController = {
     try {
       const stats = await getTMSStats(req.params.hotelId as string);
       res.json({ success: true, data: stats });
+    } catch (err) { next(err); }
+  },
+
+  // ── Widget Config ──────────────────────────────────────────────────────────
+  async getWidgetConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json({ success: true, data: await adminWidgetService.get(req.params.hotelId as string) });
+    } catch (err) { next(err); }
+  },
+
+  async updateWidgetConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json({ success: true, data: await adminWidgetService.update(req.params.hotelId as string, req.body) });
+    } catch (err) { next(err); }
+  },
+
+  async addWidgetRoom(req: Request, res: Response, next: NextFunction) {
+    try {
+      const room = await adminWidgetService.addRoom(req.params.hotelId as string, req.body);
+      res.status(201).json({ success: true, data: room });
+    } catch (err) { next(err); }
+  },
+
+  async updateWidgetRoom(req: Request, res: Response, next: NextFunction) {
+    try {
+      const room = await adminWidgetService.updateRoom(req.params.hotelId as string, req.params.roomId as string, req.body);
+      res.json({ success: true, data: room });
+    } catch (err) { next(err); }
+  },
+
+  async deleteWidgetRoom(req: Request, res: Response, next: NextFunction) {
+    try {
+      await adminWidgetService.deleteRoom(req.params.hotelId as string, req.params.roomId as string);
+      res.json({ success: true });
+    } catch (err) { next(err); }
+  },
+
+  async addWidgetService(req: Request, res: Response, next: NextFunction) {
+    try {
+      const svc = await adminWidgetService.addService(req.params.hotelId as string, req.body);
+      res.status(201).json({ success: true, data: svc });
+    } catch (err) { next(err); }
+  },
+
+  async updateWidgetService(req: Request, res: Response, next: NextFunction) {
+    try {
+      const svc = await adminWidgetService.updateService(req.params.hotelId as string, req.params.serviceId as string, req.body);
+      res.json({ success: true, data: svc });
+    } catch (err) { next(err); }
+  },
+
+  async deleteWidgetService(req: Request, res: Response, next: NextFunction) {
+    try {
+      await adminWidgetService.deleteService(req.params.hotelId as string, req.params.serviceId as string);
+      res.json({ success: true });
+    } catch (err) { next(err); }
+  },
+
+  // ── Hotel Chains ────────────────────────────────────────────────────────────
+  async listChains(_req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json({ success: true, data: await adminChainService.list() });
+    } catch (err) { next(err); }
+  },
+
+  async getChain(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json({ success: true, data: await adminChainService.get(req.params.chainId as string) });
+    } catch (err) { next(err); }
+  },
+
+  async createChain(req: Request, res: Response, next: NextFunction) {
+    try {
+      const chain = await adminChainService.create(req.body.name);
+      res.status(201).json({ success: true, data: chain });
+    } catch (err) { next(err); }
+  },
+
+  async deleteChain(req: Request, res: Response, next: NextFunction) {
+    try {
+      await adminChainService.delete(req.params.chainId as string);
+      res.json({ success: true });
+    } catch (err) { next(err); }
+  },
+
+  async setHotelChain(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { chainId } = req.body as { chainId: string | null };
+      res.json({ success: true, data: await adminChainService.setHotelChain(req.params.hotelId as string, chainId) });
+    } catch (err) { next(err); }
+  },
+
+  async searchHotelsByName(req: Request, res: Response, next: NextFunction) {
+    try {
+      const query = req.query.q as string;
+      res.json({ success: true, data: await adminChainService.searchByName(query ?? '') });
     } catch (err) { next(err); }
   },
 };

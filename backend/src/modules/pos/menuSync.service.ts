@@ -3,9 +3,11 @@ import { POSFactory } from './POSFactory';
 
 export async function syncMenuFromPOS(
   hotelId: string,
+  force = false,
 ): Promise<{ synced: number; errors: string[] }> {
   const posConfig = await prisma.hotelPOSConfig.findUnique({ where: { hotelId } });
-  if (!posConfig?.syncEnabled) return { synced: 0, errors: ['POS sync disabled'] };
+  if (!posConfig) return { synced: 0, errors: ['POS not configured'] };
+  if (!force && !posConfig.syncEnabled) return { synced: 0, errors: ['POS sync disabled'] };
 
   const adapter = POSFactory.createAdapter({
     posType: posConfig.posType,

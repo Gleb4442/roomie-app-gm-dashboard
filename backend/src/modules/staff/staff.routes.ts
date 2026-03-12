@@ -14,6 +14,7 @@ router.post('/login/pin', ctrl.loginByPin);
 router.use(staffAuth);
 
 router.get('/me', ctrl.getMe);
+router.delete('/me', ctrl.deleteAccount);
 router.get('/shift/status', ctrl.getShiftStatus);
 router.post('/shift/start', ctrl.startShift);
 router.post('/shift/end', ctrl.endShift);

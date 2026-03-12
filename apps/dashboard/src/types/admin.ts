@@ -23,6 +23,8 @@ export interface HotelDetail {
   logoUrl: string | null;
   imageUrl: string | null;
   settings: Record<string, unknown>;
+  chainId: string | null;
+  chain?: { id: string; name: string } | null;
   createdAt: string;
 }
 
@@ -52,8 +54,14 @@ export interface POSConfig {
   id?: string;
   hotelId: string;
   posType: string;
-  isActive: boolean;
-  credentials: Record<string, string>;
+  apiUrl: string;
+  accessToken: string;
+  spotId?: string | null;
+  syncEnabled: boolean;
+  syncInterval: number;
+  lastSyncAt?: string | null;
+  lastError?: string | null;
+  categoryMap?: Record<string, string> | null;
 }
 
 export interface TMSConfig {

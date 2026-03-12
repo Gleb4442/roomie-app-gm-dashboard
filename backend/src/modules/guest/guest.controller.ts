@@ -11,6 +11,7 @@ import {
   linkChatSchema,
 } from './guest.validation';
 import { AuthenticatedRequest } from '../../shared/types';
+import { prisma } from '../../config/database';
 
 export const guestController = {
   async register(req: Request, res: Response, next: NextFunction) {
@@ -126,6 +127,16 @@ export const guestController = {
     }
   },
 
+  async deleteAccount(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const guestId = req.guest!.id;
+      const result = await guestService.deleteAccount(guestId);
+      res.status(200).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async savePushToken(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const guestId = req.guest!.id;
@@ -139,6 +150,59 @@ export const guestController = {
         data: { expoPushToken },
       });
       res.status(200).json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // ── In-App Chat Service Request ────────────────────────────────────────────
+  async createChatServiceRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const guestId = req.guest!.id;
+      const { hotelId, categorySlug, comment, roomNumber } = req.body as {
+        hotelId: string;
+        categorySlug: string;
+        comment?: string;
+        roomNumber?: string;
+      };
+
+      if (!hotelId || !categorySlug) {
+        res.status(400).json({ error: 'hotelId and categorySlug are required' });
+        return;
+      }
+
+      const stay = await prisma.guestStay.findFirst({
+        where: { hotelId, guestId, stage: { notIn: ['POST_STAY', 'BETWEEN_STAYS'] } },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      let category = await prisma.serviceCategory.findFirst({
+        where: { hotelId, slug: categorySlug, isActive: true },
+      });
+      if (!category) {
+        category = await prisma.serviceCategory.findFirst({
+          where: { hotelId, isActive: true },
+          orderBy: { sortOrder: 'asc' },
+        });
+      }
+      if (!category) {
+        res.status(404).json({ error: 'Service category not found' });
+        return;
+      }
+
+      const sr = await prisma.serviceRequest.create({
+        data: {
+          hotelId,
+          guestId,
+          guestStayId: stay?.id,
+          categoryId: category.id,
+          comment: comment || null,
+          roomNumber: roomNumber || stay?.roomNumber || null,
+          status: 'pending',
+        },
+      });
+
+      res.status(201).json({ success: true, data: { id: sr.id, status: sr.status, categoryName: category.name } });
     } catch (err) {
       next(err);
     }

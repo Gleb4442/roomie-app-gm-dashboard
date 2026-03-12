@@ -65,6 +65,29 @@ enum JourneyStage {
   BETWEEN_STAYS
 }
 
+enum JourneySubStage {
+  // PRE_ARRIVAL sub-stages
+  BOOKING_CONFIRMED
+  DAYS_7_BEFORE
+  DAYS_1_BEFORE
+
+  // CHECKED_IN / IN_STAY sub-stages
+  CHECK_IN_DAY
+  DAY_1
+  MID_STAY
+  DAYS_1_BEFORE_OUT
+
+  // CHECKOUT
+  CHECKOUT_DAY
+
+  // POST_STAY sub-stages
+  DAYS_1_AFTER
+  DAYS_7_AFTER
+
+  // BETWEEN_STAYS
+  IDLE
+}
+
 enum LateCheckoutStatus {
   PENDING
   APPROVED
@@ -108,6 +131,7 @@ model GuestAccount {
   expoPushToken  String?
   profile        Json?
   preferences    Json?
+  language       String?     @default("uk")
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
@@ -116,8 +140,24 @@ model GuestAccount {
   hotelLinks        GuestHotel[]
   orders            Order[]
   serviceRequests   ServiceRequest[]
+  loyaltyAccounts   LoyaltyAccount[]
+  guestProfile      GuestProfile?
+  tags              GuestTag[]
+  offers            GuestOffer[]
+  reviews           GuestReview[]
+  pushNotifications PushNotificationLog[]
 
   @@map("guest_accounts")
+}
+
+model HotelChain {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  hotels    Hotel[]
+
+  @@map("hotel_chains")
 }
 
 model Hotel {
@@ -133,8 +173,10 @@ model Hotel {
   contactPhone  String?
   timezone      String   @default("UTC")
   settings      Json?
+  chainId       String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  chain         HotelChain? @relation(fields: [chainId], references: [id])
 
   stays              GuestStay[]
   appOpens           AppOpen[]
@@ -155,6 +197,12 @@ model Hotel {
   departments        Department[]
   staffGroups        StaffGroup[]
   rooms              Room[]
+  loyaltySettings    LoyaltySettings?
+  loyaltyAccounts    LoyaltyAccount[]
+  guestTags          GuestTag[]
+  guestOffers        GuestOffer[]
+  guestReviews       GuestReview[]
+  pushNotifications  PushNotificationLog[]
 
   @@map("hotels")
 }
@@ -176,27 +224,29 @@ model GuestHotel {
 }
 
 model GuestStay {
-  id                      String       @id @default(uuid())
+  id                      String           @id @default(uuid())
   guestId                 String
   hotelId                 String
   bookingRef              String?
-  stage                   JourneyStage @default(BETWEEN_STAYS)
+  stage                   JourneyStage     @default(BETWEEN_STAYS)
+  subStage                JourneySubStage  @default(IDLE)
   roomNumber              String?
   roomType                String?
   checkIn                 DateTime?
   checkOut                DateTime?
   enteredVia              EntrySource?
   pmsData                 Json?
-  preCheckinCompleted     Boolean      @default(false)
+  preCheckinCompleted     Boolean          @default(false)
   preCheckinUrl           String?
   preCheckinExpiresAt     DateTime?
   preCheckinData          Json?
-  externalReservationId   String?      @unique
+  externalReservationId   String?          @unique
   pmsProvider             String?
   pmsRawData              Json?
   source                  String?
-  createdAt               DateTime     @default(now())
-  updatedAt               DateTime     @updatedAt
+  totalSpentDuringStay    Float            @default(0)
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
 
   extensionRequestedUntil DateTime?
   extensionStatus         LateCheckoutStatus?
@@ -567,6 +617,7 @@ model ServiceItem {
   descriptionUk   String?
   descriptionEn   String?
   icon            String?
+  photoUrl        String?
   price           Float    @default(0)
   currency        String   @default("UAH")
   isActive        Boolean  @default(true)
@@ -1043,6 +1094,75 @@ model TaskStatusChange {
   @@map("task_status_changes")
 }
 
+// ──── Loyalty Program ────────────────────────────────────────
+
+enum LoyaltyTransactionType {
+  STAY_NIGHTS
+  MANUAL_ADJUST
+  TIER_CHANGE
+}
+
+enum LoyaltyTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+model LoyaltySettings {
+  id                    String   @id @default(uuid())
+  hotelId               String   @unique
+  isEnabled             Boolean  @default(true)
+  programName           String   @default("Loyalty Program")
+
+  // Night requirements per year to maintain tier
+  silverNightsRequired  Int      @default(10)
+  goldNightsRequired    Int      @default(25)
+  platinumNightsRequired Int     @default(50)
+
+  hotel                 Hotel    @relation(fields: [hotelId], references: [id])
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("loyalty_settings")
+}
+
+model LoyaltyAccount {
+  id             String       @id @default(uuid())
+  guestId        String
+  hotelId        String
+  nightsThisYear Int          @default(0)
+  totalNights    Int          @default(0)
+  tier           LoyaltyTier  @default(BRONZE)
+  yearStart      DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  guest          GuestAccount   @relation(fields: [guestId], references: [id])
+  hotel          Hotel          @relation(fields: [hotelId], references: [id])
+  transactions   LoyaltyTransaction[]
+
+  @@unique([guestId, hotelId])
+  @@index([hotelId, nightsThisYear])
+  @@map("loyalty_accounts")
+}
+
+model LoyaltyTransaction {
+  id          String                 @id @default(uuid())
+  accountId   String
+  type        LoyaltyTransactionType
+  nights      Int
+  description String
+  stayId      String?
+  createdAt   DateTime               @default(now())
+
+  account     LoyaltyAccount         @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, createdAt])
+  @@index([stayId])
+  @@map("loyalty_transactions")
+}
+
 // ──── TMS Configuration ──────────────────────────────────────
 
 model HotelTMSConfig {
@@ -1071,4 +1191,165 @@ model HotelTMSConfig {
   updatedAt       DateTime @updatedAt
 
   @@map("hotel_tms_configs")
+}
+
+// ──── Guest Profile (AI Context & Personalization) ──────────────────
+
+enum GuestGender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum GuestBudget {
+  ECONOMY
+  MID
+  PREMIUM
+  LUXURY
+}
+
+enum TravelStyle {
+  BUSINESS
+  LEISURE
+  FAMILY
+  ROMANTIC
+  GROUP
+}
+
+model GuestProfile {
+  id              String        @id @default(uuid())
+  guestId         String        @unique
+
+  // Demographics
+  gender          GuestGender?
+  ageRange        String?       // "18-25" | "26-35" | "36-50" | "51-65" | "65+"
+  country         String?       // ISO 3166-1 alpha-2
+  city            String?
+
+  // Preferences
+  budget          GuestBudget?
+  travelStyle     TravelStyle?
+  interests       String[]      // ["spa", "beach", "food", "nightlife", "culture", "nature", "fitness"]
+  dietaryNeeds    String[]      // ["vegetarian", "vegan", "halal", "kosher", "gluten-free"]
+
+  // Behavioral (auto-computed)
+  totalBookings     Int         @default(0)
+  totalSpent        Float       @default(0)
+  avgStayNights     Float       @default(0)
+  lastVisitAt       DateTime?
+  favoriteRoomType  String?
+  topOrderedItems   String[]    // top 5 service/food items by frequency
+  mostVisitedHotel  String?     // hotelId
+
+  // AI context (auto-generated summaries)
+  guestSummary          String?   // 1-2 sentence AI-generated guest summary
+  lastInteractionTopics String[]  // last 5 conversation topics
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guest     GuestAccount @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@map("guest_profiles")
+}
+
+// ──── Guest Tags (Manager-applied & Auto-generated) ──────────
+
+model GuestTag {
+  id        String   @id @default(uuid())
+  guestId   String
+  hotelId   String
+  tag       String   // "VIP", "frequent", "spa-lover", "early-checkin", "business", custom tags
+  source    String   @default("manual") // "manual" | "auto"
+  createdAt DateTime @default(now())
+
+  guest     GuestAccount @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  hotel     Hotel        @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+
+  @@unique([guestId, hotelId, tag])
+  @@index([hotelId, tag])
+  @@map("guest_tags")
+}
+
+// ──── Guest Offers (Proactive Offers & Promotions) ───────────
+
+enum OfferStatus {
+  DRAFT
+  ACTIVE
+  SENT
+  VIEWED
+  REDEEMED
+  EXPIRED
+}
+
+model GuestOffer {
+  id            String      @id @default(uuid())
+  hotelId       String
+  guestId       String?     // null = broadcast offer for all guests
+  title         String
+  description   String
+  discountType  String      @default("percent") // "percent" | "fixed" | "upgrade" | "freebie"
+  discountValue Float       @default(0)
+  code          String?     // promo code
+  validFrom     DateTime    @default(now())
+  validUntil    DateTime
+  status        OfferStatus @default(DRAFT)
+  triggerRule    String?     // "post_stay" | "inactive_30d" | "birthday" | "manual"
+  sentAt        DateTime?
+  viewedAt      DateTime?
+  redeemedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  hotel         Hotel        @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  guest         GuestAccount? @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@index([hotelId, status])
+  @@index([guestId])
+  @@map("guest_offers")
+}
+
+// ──── Guest Reviews ──────────────────────────────────────────
+
+model GuestReview {
+  id          String   @id @default(uuid())
+  hotelId     String
+  guestId     String
+  stayId      String?  // linked to specific stay
+  rating      Int      // 1-5
+  comment     String?
+  categories  Json?    // { cleanliness: 4, service: 5, location: 5, value: 3 }
+  isPublic    Boolean  @default(true)
+  managerReply String?
+  repliedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hotel       Hotel        @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  guest       GuestAccount @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@index([hotelId, rating])
+  @@index([guestId])
+  @@map("guest_reviews")
+}
+
+// ──── Push Notification Log ─────────────────────────────────
+
+model PushNotificationLog {
+  id          String   @id @default(uuid())
+  hotelId     String
+  title       String
+  body        String
+  targetType  String   @default("individual") // "individual" | "stage" | "all"
+  targetGuestId String?
+  targetStage String?  // e.g. "CHECKED_IN", "PRE_ARRIVAL"
+  sentCount   Int      @default(0)
+  sentBy      String   // manager id
+  createdAt   DateTime @default(now())
+
+  hotel       Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  guest       GuestAccount? @relation(fields: [targetGuestId], references: [id], onDelete: SetNull)
+
+  @@index([hotelId, createdAt])
+  @@map("push_notification_logs")
 }

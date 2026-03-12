@@ -10,11 +10,13 @@ router.post('/login', guestController.login);
 router.post('/refresh', guestController.refresh);
 router.get('/me', authenticateGuestJWT, guestController.getMe);
 router.put('/me', authenticateGuestJWT, guestController.updateProfile);
+router.delete('/me', authenticateGuestJWT, guestController.deleteAccount);
 router.post('/quick-register', guestController.quickRegister);
 router.post('/link-hotel', authenticateGuestJWT, guestController.linkHotel);
 router.post('/link-booking', authenticateGuestJWT, guestController.linkBooking);
 router.post('/link-chat', authenticateGuestJWT, guestController.linkChat);
 router.get('/by-email', authenticateGuestJWT, guestController.findByEmail);
 router.post('/push-token', authenticateGuestJWT, guestController.savePushToken);
+router.post('/chat-service-request', authenticateGuestJWT, guestController.createChatServiceRequest);
 
 export default router;

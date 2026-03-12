@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../../config/database';
 import { env } from '../../config/environment';
@@ -93,6 +94,45 @@ export const adminHotelService = {
     theme?: object;
   }) {
     return prisma.hotel.update({ where: { id: hotelId }, data });
+  },
+};
+
+// ── Hotel Chains ──────────────────────────────────────────────────────────────
+
+export const adminChainService = {
+  async list() {
+    return prisma.hotelChain.findMany({
+      include: { hotels: { select: { id: true, name: true, slug: true, location: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+  },
+
+  async get(chainId: string) {
+    return prisma.hotelChain.findUniqueOrThrow({
+      where: { id: chainId },
+      include: { hotels: { select: { id: true, name: true, slug: true, location: true, timezone: true } } },
+    });
+  },
+
+  async create(name: string) {
+    return prisma.hotelChain.create({ data: { name } });
+  },
+
+  async delete(chainId: string) {
+    await prisma.hotel.updateMany({ where: { chainId }, data: { chainId: null } });
+    return prisma.hotelChain.delete({ where: { id: chainId } });
+  },
+
+  async setHotelChain(hotelId: string, chainId: string | null) {
+    return prisma.hotel.update({ where: { id: hotelId }, data: { chainId } });
+  },
+
+  async searchByName(query: string) {
+    return prisma.hotel.findMany({
+      where: { name: { contains: query, mode: 'insensitive' } },
+      select: { id: true, name: true, slug: true, location: true, chainId: true },
+      take: 20,
+    });
   },
 };
 
@@ -251,8 +291,16 @@ export const adminPosService = {
 
   async syncMenu(hotelId: string) {
     const { syncMenuFromPOS } = await import('../pos/menuSync.service');
-    await syncMenuFromPOS(hotelId);
-    return { triggered: true };
+    return syncMenuFromPOS(hotelId, true);
+  },
+
+  async getCategories(hotelId: string) {
+    const cfg = await prisma.hotelPOSConfig.findUnique({ where: { hotelId } });
+    if (!cfg) throw new AppError(404, 'POS not configured');
+    const { POSFactory } = await import('../pos/POSFactory');
+    const adapter = POSFactory.createAdapter(cfg);
+    if (!adapter) throw new AppError(400, `POS type ${cfg.posType} not supported`);
+    return adapter.getCategories();
   },
 };
 
@@ -572,4 +620,129 @@ export const adminTmsService = {
       data: { categoryMapping: mapping },
     });
   },
+};
+
+// ── Widget Config ─────────────────────────────────────────────────────────────
+
+export interface WidgetRoom {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  currency: string;
+  area: number | null;
+  maxGuests: number;
+  photos: string[];
+}
+
+export interface WidgetService {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  currency: string;
+  category: string;
+  photo: string;
+}
+
+export interface WidgetConfig {
+  hotelInfo: string;
+  showBranding: boolean;
+  showTelegram: boolean;
+  inAppMode: boolean;
+  operatorMode: { enabled: boolean; name: string };
+  menu: { enabled: boolean; type: 'link' | 'pdf'; url: string };
+  rooms: WidgetRoom[];
+  services: WidgetService[];
+}
+
+const DEFAULT_WIDGET_CONFIG: WidgetConfig = {
+  hotelInfo: '',
+  showBranding: true,
+  showTelegram: true,
+  inAppMode: false,
+  operatorMode: { enabled: false, name: '' },
+  menu: { enabled: false, type: 'link', url: '' },
+  rooms: [],
+  services: [],
+};
+
+async function getHotelSettings(hotelId: string) {
+  const hotel = await prisma.hotel.findUniqueOrThrow({ where: { id: hotelId }, select: { settings: true } });
+  return (hotel.settings ?? {}) as Record<string, unknown>;
+}
+
+async function getWidgetConfig(hotelId: string): Promise<WidgetConfig> {
+  const settings = await getHotelSettings(hotelId);
+  return { ...DEFAULT_WIDGET_CONFIG, ...(settings.widgetConfig as Partial<WidgetConfig> ?? {}) };
+}
+
+async function saveWidgetConfig(hotelId: string, config: WidgetConfig) {
+  const settings = await getHotelSettings(hotelId);
+  await prisma.hotel.update({
+    where: { id: hotelId },
+    data: { settings: JSON.parse(JSON.stringify({ ...settings, widgetConfig: config })) },
+  });
+  return config;
+}
+
+export const adminWidgetService = {
+  async get(hotelId: string): Promise<WidgetConfig> {
+    return getWidgetConfig(hotelId);
+  },
+
+  async update(hotelId: string, data: Partial<Omit<WidgetConfig, 'rooms' | 'services'>>) {
+    const config = await getWidgetConfig(hotelId);
+    const updated: WidgetConfig = { ...config, ...data };
+    return saveWidgetConfig(hotelId, updated);
+  },
+
+  // Rooms
+  async addRoom(hotelId: string, room: Omit<WidgetRoom, 'id'>): Promise<WidgetRoom> {
+    const config = await getWidgetConfig(hotelId);
+    const newRoom: WidgetRoom = { ...room, id: randomUUID() };
+    config.rooms = [...config.rooms, newRoom];
+    await saveWidgetConfig(hotelId, config);
+    return newRoom;
+  },
+
+  async updateRoom(hotelId: string, roomId: string, data: Partial<Omit<WidgetRoom, 'id'>>) {
+    const config = await getWidgetConfig(hotelId);
+    const idx = config.rooms.findIndex((r) => r.id === roomId);
+    if (idx === -1) throw new AppError(404, 'Room not found');
+    config.rooms[idx] = { ...config.rooms[idx], ...data };
+    await saveWidgetConfig(hotelId, config);
+    return config.rooms[idx];
+  },
+
+  async deleteRoom(hotelId: string, roomId: string) {
+    const config = await getWidgetConfig(hotelId);
+    config.rooms = config.rooms.filter((r) => r.id !== roomId);
+    await saveWidgetConfig(hotelId, config);
+  },
+
+  // Services
+  async addService(hotelId: string, service: Omit<WidgetService, 'id'>): Promise<WidgetService> {
+    const config = await getWidgetConfig(hotelId);
+    const newService: WidgetService = { ...service, id: randomUUID() };
+    config.services = [...config.services, newService];
+    await saveWidgetConfig(hotelId, config);
+    return newService;
+  },
+
+  async updateService(hotelId: string, serviceId: string, data: Partial<Omit<WidgetService, 'id'>>) {
+    const config = await getWidgetConfig(hotelId);
+    const idx = config.services.findIndex((s) => s.id === serviceId);
+    if (idx === -1) throw new AppError(404, 'Service not found');
+    config.services[idx] = { ...config.services[idx], ...data };
+    await saveWidgetConfig(hotelId, config);
+    return config.services[idx];
+  },
+
+  async deleteService(hotelId: string, serviceId: string) {
+    const config = await getWidgetConfig(hotelId);
+    config.services = config.services.filter((s) => s.id !== serviceId);
+    await saveWidgetConfig(hotelId, config);
+  },
+
 };

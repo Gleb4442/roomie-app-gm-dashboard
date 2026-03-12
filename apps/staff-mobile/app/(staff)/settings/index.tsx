@@ -3,6 +3,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../src/stores/authStore';
+import { staffApi } from '../../../src/api/staffApi';
 import { colors, spacing, radius } from '../../../src/theme';
 
 const LANGUAGES = [
@@ -20,6 +21,28 @@ export default function SettingsScreen() {
       { text: t('settings.cancel'), style: 'cancel' },
       { text: t('settings.signOut'), style: 'destructive', onPress: logout },
     ]);
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      t('settings.deleteAccount'),
+      t('settings.deleteAccountConfirm'),
+      [
+        { text: t('settings.cancel'), style: 'cancel' },
+        {
+          text: t('settings.delete'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await staffApi.delete('/me');
+              logout();
+            } catch {
+              Alert.alert('Error', t('settings.deleteAccountError'));
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -61,6 +84,11 @@ export default function SettingsScreen() {
           <TouchableOpacity style={styles.signOutRow} onPress={handleSignOut} activeOpacity={0.7}>
             <MaterialIcons name="logout" size={20} color={colors.error} />
             <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity style={styles.signOutRow} onPress={handleDeleteAccount} activeOpacity={0.7}>
+            <MaterialIcons name="delete-outline" size={20} color={colors.textTertiary} />
+            <Text style={styles.deleteText}>{t('settings.deleteAccount')}</Text>
           </TouchableOpacity>
         </View>
 
@@ -136,6 +164,7 @@ const styles = StyleSheet.create({
     minHeight: 56,
   },
   signOutText: { fontSize: 16, fontWeight: '600', color: colors.error },
+  deleteText: { fontSize: 16, fontWeight: '500', color: colors.textTertiary },
 
   version: {
     fontSize: 12,

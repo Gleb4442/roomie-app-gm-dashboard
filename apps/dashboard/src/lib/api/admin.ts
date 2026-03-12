@@ -13,6 +13,53 @@ import type {
   MonitoringOverview,
 } from '@/types/admin';
 
+export interface HotelChain {
+  id: string;
+  name: string;
+  createdAt: string;
+  hotels: Array<{ id: string; name: string; slug: string; location: string | null }>;
+}
+
+export interface HotelSearchResult {
+  id: string;
+  name: string;
+  slug: string;
+  location: string | null;
+  chainId: string | null;
+}
+
+export interface WidgetRoom {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  currency: string;
+  area: number | null;
+  maxGuests: number;
+  photos: string[];
+}
+
+export interface WidgetServiceItem {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  currency: string;
+  category: string;
+  photo: string;
+}
+
+export interface WidgetConfig {
+  hotelInfo: string;
+  showBranding: boolean;
+  showTelegram: boolean;
+  inAppMode: boolean;
+  operatorMode: { enabled: boolean; name: string };
+  menu: { enabled: boolean; type: 'link' | 'pdf'; url: string };
+  rooms: WidgetRoom[];
+  services: WidgetServiceItem[];
+}
+
 const api = axios.create({ baseURL: getApiBase() });
 
 function authHeader(token: string) {
@@ -119,6 +166,12 @@ export const adminApi = {
   syncPosMenu: async (token: string, hotelId: string) => {
     const res = await api.post(`/api/admin/hotels/${hotelId}/pos/sync-menu`, {}, { headers: authHeader(token) });
     return res.data;
+  },
+  getPosCategories: async (token: string, hotelId: string): Promise<{ id: string; name: string; photo?: string }[]> => {
+    try {
+      const res = await api.get(`/api/admin/hotels/${hotelId}/pos/categories`, { headers: authHeader(token) });
+      return res.data.data ?? [];
+    } catch { return []; }
   },
 
   // QR
@@ -288,6 +341,59 @@ export const adminApi = {
   getTmsStats: async (token: string, hotelId: string) => {
     const res = await api.get(`/api/admin/hotels/${hotelId}/tms/stats`, { headers: authHeader(token) });
     return res.data.data;
+  },
+
+  // Widget Config
+  getWidgetConfig: async (token: string, hotelId: string): Promise<WidgetConfig> => {
+    const res = await api.get(`/api/admin/hotels/${hotelId}/widget`, { headers: authHeader(token) });
+    return res.data.data;
+  },
+  updateWidgetConfig: async (token: string, hotelId: string, data: Partial<Omit<WidgetConfig, 'rooms' | 'services'>>) => {
+    const res = await api.put(`/api/admin/hotels/${hotelId}/widget`, data, { headers: authHeader(token) });
+    return res.data.data as WidgetConfig;
+  },
+  addWidgetRoom: async (token: string, hotelId: string, room: Omit<WidgetRoom, 'id'>) => {
+    const res = await api.post(`/api/admin/hotels/${hotelId}/widget/rooms`, room, { headers: authHeader(token) });
+    return res.data.data as WidgetRoom;
+  },
+  updateWidgetRoom: async (token: string, hotelId: string, roomId: string, data: Partial<Omit<WidgetRoom, 'id'>>) => {
+    const res = await api.put(`/api/admin/hotels/${hotelId}/widget/rooms/${roomId}`, data, { headers: authHeader(token) });
+    return res.data.data as WidgetRoom;
+  },
+  deleteWidgetRoom: async (token: string, hotelId: string, roomId: string) => {
+    await api.delete(`/api/admin/hotels/${hotelId}/widget/rooms/${roomId}`, { headers: authHeader(token) });
+  },
+  addWidgetService: async (token: string, hotelId: string, service: Omit<WidgetServiceItem, 'id'>) => {
+    const res = await api.post(`/api/admin/hotels/${hotelId}/widget/services`, service, { headers: authHeader(token) });
+    return res.data.data as WidgetServiceItem;
+  },
+  updateWidgetService: async (token: string, hotelId: string, serviceId: string, data: Partial<Omit<WidgetServiceItem, 'id'>>) => {
+    const res = await api.put(`/api/admin/hotels/${hotelId}/widget/services/${serviceId}`, data, { headers: authHeader(token) });
+    return res.data.data as WidgetServiceItem;
+  },
+  deleteWidgetService: async (token: string, hotelId: string, serviceId: string) => {
+    await api.delete(`/api/admin/hotels/${hotelId}/widget/services/${serviceId}`, { headers: authHeader(token) });
+  },
+
+  // Hotel Chains
+  listChains: async (token: string) => {
+    const res = await api.get('/api/admin/chains', { headers: authHeader(token) });
+    return res.data.data as HotelChain[];
+  },
+  createChain: async (token: string, name: string) => {
+    const res = await api.post('/api/admin/chains', { name }, { headers: authHeader(token) });
+    return res.data.data as HotelChain;
+  },
+  deleteChain: async (token: string, chainId: string) => {
+    await api.delete(`/api/admin/chains/${chainId}`, { headers: authHeader(token) });
+  },
+  setHotelChain: async (token: string, hotelId: string, chainId: string | null) => {
+    const res = await api.put(`/api/admin/hotels/${hotelId}/chain`, { chainId }, { headers: authHeader(token) });
+    return res.data.data;
+  },
+  searchHotels: async (token: string, q: string) => {
+    const res = await api.get(`/api/admin/hotels/search?q=${encodeURIComponent(q)}`, { headers: authHeader(token) });
+    return res.data.data as HotelSearchResult[];
   },
 };
 

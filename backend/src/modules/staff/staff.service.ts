@@ -754,6 +754,14 @@ export async function savePushToken(staffId: string, expoPushToken: string) {
   });
 }
 
+export async function deactivateStaffAccount(staffId: string) {
+  return prisma.staffMember.update({
+    where: { id: staffId },
+    data: { isActive: false },
+    select: { id: true },
+  });
+}
+
 export async function getSupervisorsOnShift(hotelId: string): Promise<string[]> {
   const SUPERVISOR_ROLES = ['SUPERVISOR', 'HEAD_OF_DEPT', 'GENERAL_MANAGER'];
   const shifts = await prisma.staffShift.findMany({

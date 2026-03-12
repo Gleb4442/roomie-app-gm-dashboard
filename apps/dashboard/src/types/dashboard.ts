@@ -56,6 +56,7 @@ export type JourneyStage =
 
 export interface GuestRow {
   id: string;
+  guestId: string;
   guestName: string;
   phone: string;
   email: string;
@@ -207,6 +208,57 @@ export interface SMSLog {
 
 export interface SMSLogsResponse {
   logs: SMSLog[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
+// Hotel Settings
+export interface HotelSettings {
+  id: string;
+  name: string;
+  slug: string;
+  location: string | null;
+  description: string | null;
+  accentColor: string | null;
+  imageUrl: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  timezone: string;
+  settings: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Bookings
+export interface Booking {
+  id: string;
+  bookingRef: string;
+  guestName: string;
+  guestEmail: string;
+  guestPhone: string;
+  roomNumber: string;
+  stage: JourneyStage;
+  subStage: string | null;
+  checkIn: string;
+  checkOut: string;
+  source: string;
+  preCheckinCompleted: boolean;
+  totalSpentDuringStay: number;
+  createdAt: string;
+}
+
+export interface BookingsStats {
+  total: number;
+  preArrival: number;
+  inStay: number;
+  checkout: number;
+  postStay: number;
+}
+
+export interface BookingsResponse {
+  bookings: Booking[];
+  stats: BookingsStats;
   total: number;
   page: number;
   totalPages: number;

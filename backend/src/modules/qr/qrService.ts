@@ -7,6 +7,7 @@ import { logger } from '../../shared/utils/logger';
 import { qrPdfGenerator } from './qrPdfGenerator';
 import { QRScanMeta, QRCodeWithHotel } from './types';
 import { env } from '../../config/environment';
+import { AppError } from '../../shared/middleware/errorHandler';
 import type { QRCode as QRCodeModel } from '@prisma/client';
 
 function getUploadsBase(): string {
@@ -157,7 +158,8 @@ class QRService {
    * Delete a QR code and its files.
    */
   async delete(qrCodeId: string): Promise<void> {
-    const qr = await prisma.qRCode.findUniqueOrThrow({ where: { id: qrCodeId } });
+    const qr = await prisma.qRCode.findUnique({ where: { id: qrCodeId } });
+    if (!qr) throw new AppError(404, 'QR code not found');
 
     if (qr.qrImagePath && fs.existsSync(qr.qrImagePath)) {
       fs.unlinkSync(qr.qrImagePath);

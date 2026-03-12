@@ -10,5 +10,9 @@ export const updateStageSchema = z.object({
   roomNumber: z.string().optional(),
 });
 
+export const profileContextQuerySchema = z.object({
+  hotelId: z.string().uuid(),
+});
+
 export type CurrentStayQuery = z.infer<typeof currentStayQuerySchema>;
 export type UpdateStageInput = z.infer<typeof updateStageSchema>;

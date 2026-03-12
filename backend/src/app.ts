@@ -23,6 +23,7 @@ import taskSSERoutes from './modules/task/taskSSE';
 import chatIntegrationRoutes from './modules/task/chatIntegration.routes';
 import staysRoutes from './modules/stays/stays.routes';
 import qrFallbackRoutes from './modules/qr/qr.routes';
+import { guestLoyaltyRouter, dashboardLoyaltyRouter } from './modules/loyalty/loyalty.routes';
 import { dashboardRouter as housekeepingDashboardRoutes } from './modules/housekeeping/room.routes';
 import { errorHandler } from './shared/middleware/errorHandler';
 import { env } from './config/environment';
@@ -32,6 +33,10 @@ import './jobs/orderTimer.job';
 import './jobs/posSync.job';
 import './jobs/pmsSyncJob';
 import './jobs/slaMonitor.job';
+import { startPreArrivalReminderJob } from './jobs/preArrivalReminderJob';
+import { startJourneySubStageJob } from './jobs/journeySubStage.job';
+startPreArrivalReminderJob();
+startJourneySubStageJob();
 
 // Start SMS worker
 import './modules/sms/smsQueue';
@@ -71,6 +76,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/hotels', taskRoutes);
 app.use('/api/precheckin', precheckinRoutes);
 app.use('/api/stays', staysRoutes);
+app.use('/api/loyalty/:hotelId', guestLoyaltyRouter);
 app.use('/api/pos', posRoutes);
 app.use('/api', pmsRoutes);
 app.use('/api', smsRoutes);
@@ -94,6 +100,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/dashboard/staff', staffDashboardRoutes);
 app.use('/api/dashboard', departmentRoutes);
 app.use('/api/dashboard/housekeeping', housekeepingDashboardRoutes);
+app.use('/api/dashboard/hotels/:hotelId/loyalty', dashboardLoyaltyRouter);
 
 // ── QR fallback page (deep link redirect) ─────────────────────────────────────
 app.use('/qr', qrFallbackRoutes);

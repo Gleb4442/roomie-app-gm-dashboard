@@ -2,7 +2,7 @@
 import { use, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAdminAuth } from '@/contexts/AdminAuthContext';
-import { adminApi, type AdminStaffMember, type CreateAdminStaffData, type AdminRoom, type BulkRoomInput, type AdminTask, type AdminTemplate, type TemplateInput } from '@/lib/api/admin';
+import { adminApi, type AdminStaffMember, type CreateAdminStaffData, type AdminRoom, type BulkRoomInput, type AdminTask, type AdminTemplate, type TemplateInput, type WidgetConfig, type WidgetRoom, type WidgetServiceItem, type HotelChain, type HotelSearchResult } from '@/lib/api/admin';
 import { PageHeader } from '@/components/ui/PageHeader';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 const TABS = [
   { key: 'general', label: 'General' },
   { key: 'branding', label: 'Branding' },
+  { key: 'widget', label: '💬 Widget' },
   { key: 'pms', label: 'PMS' },
   { key: 'sms', label: 'SMS' },
   { key: 'pos', label: 'POS' },
@@ -20,6 +21,7 @@ const TABS = [
   { key: 'housekeeping', label: 'Housekeeping' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'templates', label: 'Templates' },
+  { key: 'network', label: '🏨 Network' },
 ];
 
 export default function HotelConfigPage({ params }: { params: Promise<{ hotelId: string }> }) {
@@ -105,6 +107,7 @@ export default function HotelConfigPage({ params }: { params: Promise<{ hotelId:
 
       {/* Branding */}
       {tab === 'branding' && <BrandingTab hotelId={hotelId} hotel={hotel} token={token!} />}
+      {tab === 'widget' && <WidgetTab hotelId={hotelId} token={token!} />}
       {tab === 'pms' && <PMSTab hotelId={hotelId} token={token!} />}
       {tab === 'sms' && <SMSTab hotelId={hotelId} token={token!} />}
       {tab === 'pos' && <POSTab hotelId={hotelId} token={token!} />}
@@ -115,6 +118,7 @@ export default function HotelConfigPage({ params }: { params: Promise<{ hotelId:
       {tab === 'housekeeping' && <HousekeepingTab hotelId={hotelId} token={token!} />}
       {tab === 'tasks' && <TasksTab hotelId={hotelId} token={token!} />}
       {tab === 'templates' && <TemplatesTab hotelId={hotelId} token={token!} />}
+      {tab === 'network' && <NetworkTab hotelId={hotelId} token={token!} currentChainId={hotel.chainId ?? null} />}
     </div>
   );
 }
@@ -181,6 +185,429 @@ function BrandingTab({ hotelId, hotel, token }: { hotelId: string; hotel: { acce
           <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} disabled={uploading} />
         </label>
       </div>
+    </div>
+  );
+}
+
+// ─── Widget ─────────────────────────────────────────────────────────────────
+
+const CURRENCIES = ['USD', 'EUR', 'UAH', 'GBP', 'AED'];
+
+const EMPTY_ROOM: Omit<WidgetRoom, 'id'> = {
+  name: '', description: '', price: 0, currency: 'USD',
+  area: null, maxGuests: 2, photos: [''],
+};
+
+const EMPTY_SERVICE: Omit<WidgetServiceItem, 'id'> = {
+  name: '', description: '', price: 0, currency: 'USD',
+  category: '', photo: '',
+};
+
+function Toggle({ label, checked, onChange, hint }: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }) {
+  return (
+    <div className="flex items-center justify-between py-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+      <div>
+        <div className="text-sm font-500 text-white">{label}</div>
+        {hint && <div className="text-xs text-ink-400 mt-0.5">{hint}</div>}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        className="relative w-11 h-6 rounded-full transition-colors flex-shrink-0"
+        style={{ background: checked ? '#F43F5E' : 'rgba(255,255,255,0.1)' }}
+      >
+        <span
+          className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform"
+          style={{ transform: checked ? 'translateX(20px)' : 'translateX(0)' }}
+        />
+      </button>
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 mb-3 mt-6">
+      <div className="text-xs font-700 uppercase tracking-widest font-display" style={{ color: '#F43F5E' }}>{children}</div>
+      <div className="flex-1 h-px" style={{ background: 'rgba(244,63,94,0.2)' }} />
+    </div>
+  );
+}
+
+function WidgetTab({ hotelId, token }: { hotelId: string; token: string }) {
+  const qc = useQueryClient();
+  const { data: cfg, isLoading } = useQuery({
+    queryKey: ['admin-widget', hotelId],
+    queryFn: () => adminApi.getWidgetConfig(token, hotelId),
+    enabled: !!token,
+  });
+
+  // General settings
+  const [hotelInfo, setHotelInfo] = useState('');
+  const [showBranding, setShowBranding] = useState(true);
+  const [showTelegram, setShowTelegram] = useState(true);
+  const [inAppMode, setInAppMode] = useState(false);
+  const [operatorEnabled, setOperatorEnabled] = useState(false);
+  const [operatorName, setOperatorName] = useState('');
+  const [menuEnabled, setMenuEnabled] = useState(false);
+  const [menuType, setMenuType] = useState<'link' | 'pdf'>('link');
+  const [menuUrl, setMenuUrl] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  // Room/service modals
+  const [roomModal, setRoomModal] = useState<{ open: boolean; data: Omit<WidgetRoom, 'id'>; editId: string | null }>({
+    open: false, data: { ...EMPTY_ROOM }, editId: null,
+  });
+  const [serviceModal, setServiceModal] = useState<{ open: boolean; data: Omit<WidgetServiceItem, 'id'>; editId: string | null }>({
+    open: false, data: { ...EMPTY_SERVICE }, editId: null,
+  });
+  const [savingRoom, setSavingRoom] = useState(false);
+  const [savingService, setSavingService] = useState(false);
+
+  // Sync state when config loads
+  const [synced, setSynced] = useState(false);
+  if (cfg && !synced) {
+    setHotelInfo(cfg.hotelInfo);
+    setShowBranding(cfg.showBranding);
+    setShowTelegram(cfg.showTelegram);
+    setInAppMode(cfg.inAppMode);
+    setOperatorEnabled(cfg.operatorMode.enabled);
+    setOperatorName(cfg.operatorMode.name);
+    setMenuEnabled(cfg.menu.enabled);
+    setMenuType(cfg.menu.type);
+    setMenuUrl(cfg.menu.url);
+    setSynced(true);
+  }
+
+  const saveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSettings(true);
+    try {
+      await adminApi.updateWidgetConfig(token, hotelId, {
+        hotelInfo,
+        showBranding,
+        showTelegram,
+        inAppMode,
+        operatorMode: { enabled: operatorEnabled, name: operatorName },
+        menu: { enabled: menuEnabled, type: menuType, url: menuUrl },
+      });
+      qc.invalidateQueries({ queryKey: ['admin-widget', hotelId] });
+      toast.success('Widget settings saved');
+    } catch { toast.error('Failed to save'); }
+    finally { setSavingSettings(false); }
+  };
+
+  const openAddRoom = () => setRoomModal({ open: true, data: { ...EMPTY_ROOM, photos: [''] }, editId: null });
+  const openEditRoom = (r: WidgetRoom) => setRoomModal({ open: true, data: { ...r }, editId: r.id });
+  const openAddService = () => setServiceModal({ open: true, data: { ...EMPTY_SERVICE }, editId: null });
+  const openEditService = (s: WidgetServiceItem) => setServiceModal({ open: true, data: { ...s }, editId: s.id });
+
+  const saveRoom = async () => {
+    if (!roomModal.data.name.trim()) return;
+    setSavingRoom(true);
+    try {
+      const photos = roomModal.data.photos.filter(Boolean);
+      const data = { ...roomModal.data, photos };
+      if (roomModal.editId) {
+        await adminApi.updateWidgetRoom(token, hotelId, roomModal.editId, data);
+      } else {
+        await adminApi.addWidgetRoom(token, hotelId, data);
+      }
+      qc.invalidateQueries({ queryKey: ['admin-widget', hotelId] });
+      setRoomModal(m => ({ ...m, open: false }));
+      toast.success(roomModal.editId ? 'Room updated' : 'Room added');
+    } catch { toast.error('Failed'); }
+    finally { setSavingRoom(false); }
+  };
+
+  const deleteRoom = async (id: string) => {
+    if (!confirm('Delete this room type?')) return;
+    await adminApi.deleteWidgetRoom(token, hotelId, id);
+    qc.invalidateQueries({ queryKey: ['admin-widget', hotelId] });
+    toast.success('Deleted');
+  };
+
+  const saveService = async () => {
+    if (!serviceModal.data.name.trim()) return;
+    setSavingService(true);
+    try {
+      if (serviceModal.editId) {
+        await adminApi.updateWidgetService(token, hotelId, serviceModal.editId, serviceModal.data);
+      } else {
+        await adminApi.addWidgetService(token, hotelId, serviceModal.data);
+      }
+      qc.invalidateQueries({ queryKey: ['admin-widget', hotelId] });
+      setServiceModal(m => ({ ...m, open: false }));
+      toast.success(serviceModal.editId ? 'Service updated' : 'Service added');
+    } catch { toast.error('Failed'); }
+    finally { setSavingService(false); }
+  };
+
+  const deleteService = async (id: string) => {
+    if (!confirm('Delete this service?')) return;
+    await adminApi.deleteWidgetService(token, hotelId, id);
+    qc.invalidateQueries({ queryKey: ['admin-widget', hotelId] });
+    toast.success('Deleted');
+  };
+
+  if (isLoading) return <div className="card h-32 shimmer" />;
+
+  return (
+    <div className="max-w-[680px] space-y-1">
+
+      {/* ── Settings form ─────────────────────────────────────────────── */}
+      <form onSubmit={saveSettings}>
+
+        <SectionTitle>AI Context</SectionTitle>
+        <div className="card p-4">
+          <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">
+            Hotel Info for AI
+          </label>
+          <textarea
+            value={hotelInfo}
+            onChange={e => setHotelInfo(e.target.value)}
+            rows={5}
+            placeholder="Describe the hotel: amenities, rules, check-in times, nearby attractions..."
+            className="w-full resize-none text-sm"
+            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '10px 12px', color: '#E2E8F0', lineHeight: 1.6 }}
+          />
+          <p className="text-xs text-ink-400 mt-2">Used by AI to answer guest questions about the hotel.</p>
+        </div>
+
+        <SectionTitle>Display Settings</SectionTitle>
+        <div className="card p-4">
+          <Toggle label="Powered by Roomie" hint="Show branding in widget footer" checked={showBranding} onChange={setShowBranding} />
+          <Toggle label="Telegram Button" hint="Show Telegram link in widget header" checked={showTelegram} onChange={setShowTelegram} />
+          <Toggle label="In-App Mode" hint="Hide app download buttons (when used inside native app)" checked={inAppMode} onChange={setInAppMode} />
+        </div>
+
+        <SectionTitle>Operator Mode</SectionTitle>
+        <div className="card p-4">
+          <Toggle label="Enable Operator Mode" hint="Simulate live operator responses" checked={operatorEnabled} onChange={setOperatorEnabled} />
+          {operatorEnabled && (
+            <div className="mt-3">
+              <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Operator Name</label>
+              <input value={operatorName} onChange={e => setOperatorName(e.target.value)} placeholder="e.g. Denis" className="w-full" />
+            </div>
+          )}
+        </div>
+
+        <SectionTitle>Restaurant Menu</SectionTitle>
+        <div className="card p-4">
+          <Toggle label="Show Menu Button" hint="Display a menu access button in widget" checked={menuEnabled} onChange={setMenuEnabled} />
+          {menuEnabled && (
+            <div className="mt-3 space-y-3">
+              <div className="flex gap-2">
+                {(['link', 'pdf'] as const).map(type => (
+                  <button key={type} type="button" onClick={() => setMenuType(type)}
+                    className="px-4 py-1.5 rounded-lg text-sm font-600 transition-colors"
+                    style={{ background: menuType === type ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.05)', color: menuType === type ? '#F43F5E' : '#94A3B8', border: `1px solid ${menuType === type ? 'rgba(244,63,94,0.3)' : 'transparent'}` }}>
+                    {type === 'link' ? '🔗 URL Link' : '📄 PDF URL'}
+                  </button>
+                ))}
+              </div>
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">
+                  {menuType === 'link' ? 'Menu URL' : 'PDF URL'}
+                </label>
+                <input value={menuUrl} onChange={e => setMenuUrl(e.target.value)} placeholder="https://..." className="w-full" />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <button type="submit" disabled={savingSettings}
+            className="px-6 py-2.5 rounded-lg text-sm font-700 transition-all"
+            style={{ background: '#F43F5E', color: '#fff', opacity: savingSettings ? 0.6 : 1 }}>
+            {savingSettings ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+      </form>
+
+      {/* ── Room Types ────────────────────────────────────────────────── */}
+      <SectionTitle>Room Types</SectionTitle>
+      <div className="space-y-2">
+        {cfg?.rooms.map(room => (
+          <div key={room.id} className="card p-4 flex items-center gap-4">
+            {room.photos[0] && (
+              <img src={room.photos[0]} alt={room.name} className="w-14 h-14 rounded-lg object-cover flex-shrink-0"
+                style={{ border: '1px solid rgba(255,255,255,0.08)' }} onError={e => (e.currentTarget.style.display = 'none')} />
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="font-600 text-white">{room.name}</div>
+              <div className="text-xs text-ink-400 mt-0.5">
+                {room.price} {room.currency}/night
+                {room.area ? ` · ${room.area} m²` : ''}
+                {` · max ${room.maxGuests} guests`}
+              </div>
+              {room.description && <div className="text-xs text-ink-500 mt-1 truncate">{room.description}</div>}
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
+              <button onClick={() => openEditRoom(room)} className="px-3 py-1.5 rounded-lg text-xs font-600 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)', color: '#94A3B8' }}>Edit</button>
+              <button onClick={() => deleteRoom(room.id)} className="px-3 py-1.5 rounded-lg text-xs font-600 transition-colors"
+                style={{ background: 'rgba(244,63,94,0.1)', color: '#F43F5E' }}>Delete</button>
+            </div>
+          </div>
+        ))}
+        <button onClick={openAddRoom}
+          className="w-full py-3 rounded-xl text-sm font-600 transition-colors flex items-center justify-center gap-2"
+          style={{ border: '1px dashed rgba(255,255,255,0.12)', color: '#64748B' }}>
+          <span style={{ fontSize: 18 }}>+</span> Add Room Type
+        </button>
+      </div>
+
+      {/* ── Services ──────────────────────────────────────────────────── */}
+      <SectionTitle>Additional Services</SectionTitle>
+      <div className="space-y-2">
+        {cfg?.services.map(svc => (
+          <div key={svc.id} className="card p-4 flex items-center gap-4">
+            {svc.photo && (
+              <img src={svc.photo} alt={svc.name} className="w-14 h-14 rounded-lg object-cover flex-shrink-0"
+                style={{ border: '1px solid rgba(255,255,255,0.08)' }} onError={e => (e.currentTarget.style.display = 'none')} />
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="font-600 text-white">{svc.name}</div>
+              <div className="text-xs text-ink-400 mt-0.5">
+                {svc.price > 0 ? `${svc.price} ${svc.currency}` : 'Free'}
+                {svc.category ? ` · ${svc.category}` : ''}
+              </div>
+              {svc.description && <div className="text-xs text-ink-500 mt-1 truncate">{svc.description}</div>}
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
+              <button onClick={() => openEditService(svc)} className="px-3 py-1.5 rounded-lg text-xs font-600 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)', color: '#94A3B8' }}>Edit</button>
+              <button onClick={() => deleteService(svc.id)} className="px-3 py-1.5 rounded-lg text-xs font-600 transition-colors"
+                style={{ background: 'rgba(244,63,94,0.1)', color: '#F43F5E' }}>Delete</button>
+            </div>
+          </div>
+        ))}
+        <button onClick={openAddService}
+          className="w-full py-3 rounded-xl text-sm font-600 transition-colors flex items-center justify-center gap-2"
+          style={{ border: '1px dashed rgba(255,255,255,0.12)', color: '#64748B' }}>
+          <span style={{ fontSize: 18 }}>+</span> Add Service
+        </button>
+      </div>
+
+      {/* ── Room Modal ───────────────────────────────────────────────── */}
+      {roomModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.7)' }}>
+          <div className="w-full max-w-[520px] max-h-[90vh] overflow-y-auto rounded-2xl p-6 space-y-4"
+            style={{ background: '#1A1F2E', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <h3 className="text-base font-700 text-white">{roomModal.editId ? 'Edit Room Type' : 'Add Room Type'}</h3>
+
+            <Field label="Name *" value={roomModal.data.name} onChange={v => setRoomModal(m => ({ ...m, data: { ...m.data, name: v } }))} placeholder="e.g. Deluxe Suite" />
+            <div>
+              <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Description</label>
+              <textarea value={roomModal.data.description} onChange={e => setRoomModal(m => ({ ...m, data: { ...m.data, description: e.target.value } }))}
+                rows={3} placeholder="Room features, view, amenities..." className="w-full resize-none text-sm"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '10px 12px', color: '#E2E8F0' }} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Price/night</label>
+                <input type="number" min={0} value={roomModal.data.price} onChange={e => setRoomModal(m => ({ ...m, data: { ...m.data, price: Number(e.target.value) } }))} className="w-full" />
+              </div>
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Currency</label>
+                <select value={roomModal.data.currency} onChange={e => setRoomModal(m => ({ ...m, data: { ...m.data, currency: e.target.value } }))}>
+                  {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Max Guests</label>
+                <input type="number" min={1} value={roomModal.data.maxGuests} onChange={e => setRoomModal(m => ({ ...m, data: { ...m.data, maxGuests: Number(e.target.value) } }))} className="w-full" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Area (m²)</label>
+              <input type="number" min={0} value={roomModal.data.area ?? ''} onChange={e => setRoomModal(m => ({ ...m, data: { ...m.data, area: e.target.value ? Number(e.target.value) : null } }))} placeholder="Optional" className="w-full" />
+            </div>
+
+            <div>
+              <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Photo URLs</label>
+              {roomModal.data.photos.map((photo, i) => (
+                <div key={i} className="flex gap-2 mb-2">
+                  <input value={photo} onChange={e => {
+                    const photos = [...roomModal.data.photos];
+                    photos[i] = e.target.value;
+                    setRoomModal(m => ({ ...m, data: { ...m.data, photos } }));
+                  }} placeholder="https://..." className="flex-1" />
+                  {roomModal.data.photos.length > 1 && (
+                    <button type="button" onClick={() => {
+                      const photos = roomModal.data.photos.filter((_, idx) => idx !== i);
+                      setRoomModal(m => ({ ...m, data: { ...m.data, photos } }));
+                    }} className="px-2 text-sm" style={{ color: '#F43F5E' }}>✕</button>
+                  )}
+                </div>
+              ))}
+              {roomModal.data.photos.length < 5 && (
+                <button type="button" onClick={() => setRoomModal(m => ({ ...m, data: { ...m.data, photos: [...m.data.photos, ''] } }))}
+                  className="text-xs text-ink-400 hover:text-white transition-colors">+ Add photo URL</button>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={saveRoom} disabled={savingRoom}
+                className="px-6 py-2 rounded-lg text-sm font-700 transition-all"
+                style={{ background: '#F43F5E', color: '#fff', opacity: savingRoom ? 0.6 : 1 }}>
+                {savingRoom ? 'Saving...' : 'Save'}
+              </button>
+              <button onClick={() => setRoomModal(m => ({ ...m, open: false }))}
+                className="px-6 py-2 rounded-lg text-sm font-600 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)', color: '#94A3B8' }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Service Modal ─────────────────────────────────────────────── */}
+      {serviceModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.7)' }}>
+          <div className="w-full max-w-[480px] max-h-[90vh] overflow-y-auto rounded-2xl p-6 space-y-4"
+            style={{ background: '#1A1F2E', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <h3 className="text-base font-700 text-white">{serviceModal.editId ? 'Edit Service' : 'Add Service'}</h3>
+
+            <Field label="Name *" value={serviceModal.data.name} onChange={v => setServiceModal(m => ({ ...m, data: { ...m.data, name: v } }))} placeholder="e.g. Airport Transfer" />
+            <div>
+              <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Description</label>
+              <textarea value={serviceModal.data.description} onChange={e => setServiceModal(m => ({ ...m, data: { ...m.data, description: e.target.value } }))}
+                rows={3} placeholder="Service details..." className="w-full resize-none text-sm"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '10px 12px', color: '#E2E8F0' }} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Price</label>
+                <input type="number" min={0} value={serviceModal.data.price} onChange={e => setServiceModal(m => ({ ...m, data: { ...m.data, price: Number(e.target.value) } }))} className="w-full" />
+              </div>
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Currency</label>
+                <select value={serviceModal.data.currency} onChange={e => setServiceModal(m => ({ ...m, data: { ...m.data, currency: e.target.value } }))}>
+                  {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Category</label>
+                <input value={serviceModal.data.category} onChange={e => setServiceModal(m => ({ ...m, data: { ...m.data, category: e.target.value } }))} placeholder="e.g. Transfer" className="w-full" />
+              </div>
+            </div>
+            <Field label="Photo URL" value={serviceModal.data.photo} onChange={v => setServiceModal(m => ({ ...m, data: { ...m.data, photo: v } }))} placeholder="https://..." />
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={saveService} disabled={savingService}
+                className="px-6 py-2 rounded-lg text-sm font-700 transition-all"
+                style={{ background: '#F43F5E', color: '#fff', opacity: savingService ? 0.6 : 1 }}>
+                {savingService ? 'Saving...' : 'Save'}
+              </button>
+              <button onClick={() => setServiceModal(m => ({ ...m, open: false }))}
+                className="px-6 py-2 rounded-lg text-sm font-600 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)', color: '#94A3B8' }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -381,68 +808,244 @@ function SMSTab({ hotelId, token }: { hotelId: string; token: string }) {
 
 // ─── POS ───────────────────────────────────────────────────────────────────
 
+const POS_TYPE_URLS: Record<string, string> = {
+  poster: 'https://joinposter.com/api',
+};
+const OUR_CATEGORIES = ['restaurant', 'bar', 'food_drink', 'spa', 'transport', 'housekeeping', 'other'];
+
 function POSTab({ hotelId, token }: { hotelId: string; token: string }) {
-  const { data: pos } = useQuery({
+  const qc = useQueryClient();
+  const { data: pos, isLoading } = useQuery({
     queryKey: ['admin-pos', hotelId],
     queryFn: () => adminApi.getPosConfig(token, hotelId),
     enabled: !!token,
   });
 
-  const [form, setForm] = useState({ posType: 'POSTER', token: '', accountId: '' });
-  const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [form, setForm] = useState({
+    posType: 'poster',
+    apiUrl: 'https://joinposter.com/api',
+    accessToken: '',
+    spotId: '',
+    syncEnabled: false,
+    syncInterval: 60,
+  });
   const [synced2, setSynced2] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [savingMap, setSavingMap] = useState(false);
+  const [categoryMap, setCategoryMap] = useState<Record<string, string>>({});
 
   if (pos && !synced2) {
     setForm({
-      posType: pos.posType ?? 'POSTER',
-      token: (pos.credentials?.token as string) ?? '',
-      accountId: (pos.credentials?.accountId as string) ?? '',
+      posType: pos.posType ?? 'poster',
+      apiUrl: pos.apiUrl ?? POS_TYPE_URLS['poster'],
+      accessToken: '',
+      spotId: pos.spotId ?? '',
+      syncEnabled: pos.syncEnabled ?? false,
+      syncInterval: pos.syncInterval ?? 60,
     });
+    setCategoryMap((pos.categoryMap as Record<string, string>) ?? {});
     setSynced2(true);
   }
+
+  const { data: posCats = [] } = useQuery({
+    queryKey: ['admin-pos-cats', hotelId],
+    queryFn: () => adminApi.getPosCategories(token, hotelId),
+    enabled: !!pos,
+  });
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setTestResult(null);
     try {
-      await adminApi.upsertPosConfig(token, hotelId, { posType: form.posType, credentials: { token: form.token, accountId: form.accountId } });
+      const payload: Record<string, unknown> = {
+        posType: form.posType,
+        apiUrl: form.apiUrl,
+        spotId: form.spotId || undefined,
+        syncEnabled: form.syncEnabled,
+        syncInterval: form.syncInterval,
+      };
+      if (form.accessToken) payload.accessToken = form.accessToken;
+      await adminApi.upsertPosConfig(token, hotelId, payload as import('@/types/admin').POSConfig);
+      qc.invalidateQueries({ queryKey: ['admin-pos', hotelId] });
       toast.success('POS config saved');
-    } catch { toast.error('Failed'); }
+    } catch { toast.error('Failed to save'); }
     finally { setSaving(false); }
+  };
+
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await adminApi.testPosConnection(token, hotelId);
+      const d = (res?.data ?? res) as { success: boolean; message: string };
+      setTestResult({ ok: d.success, msg: d.message });
+    } catch { setTestResult({ ok: false, msg: 'Request failed' }); }
+    finally { setTesting(false); }
   };
 
   const syncMenu = async () => {
     setSyncing(true);
+    setSyncResult(null);
     try {
-      await adminApi.syncPosMenu(token, hotelId);
-      toast.success('Menu sync triggered');
-    } catch { toast.error('Sync failed'); }
+      const res = await adminApi.syncPosMenu(token, hotelId);
+      const d = (res?.data ?? res) as { synced?: number };
+      setSyncResult(d?.synced !== undefined ? `Synced ${d.synced} items` : 'Sync triggered');
+      qc.invalidateQueries({ queryKey: ['admin-pos', hotelId] });
+      qc.invalidateQueries({ queryKey: ['admin-pos-cats', hotelId] });
+    } catch { setSyncResult('Sync failed'); }
     finally { setSyncing(false); }
   };
 
+  const saveMapping = async () => {
+    setSavingMap(true);
+    try {
+      await adminApi.upsertPosConfig(token, hotelId, { categoryMap } as import('@/types/admin').POSConfig);
+      toast.success('Category mapping saved');
+    } catch { toast.error('Failed'); }
+    finally { setSavingMap(false); }
+  };
+
+  if (isLoading) return <div className="card h-32 shimmer" />;
+
+  const lastSync = pos?.lastSyncAt ? new Date(pos.lastSyncAt).toLocaleString() : null;
+
   return (
-    <form onSubmit={save} className="card p-6 space-y-4 max-w-[520px]">
-      <h3 className="font-display font-700 text-sm text-white">POS Integration</h3>
-      <div>
-        <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">POS Type</label>
-        <select value={form.posType} onChange={e => setForm(f => ({ ...f, posType: e.target.value }))}>
-          {['POSTER', 'SYRVE', 'RKEEPER'].map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-      </div>
-      <Field label="API Token" value={form.token} onChange={v => setForm(f => ({ ...f, token: v }))} placeholder="POS API token" />
-      <Field label="Account ID" value={form.accountId} onChange={v => setForm(f => ({ ...f, accountId: v }))} placeholder="Account or tenant ID" />
-      <div className="flex gap-2">
-        <SaveBtn saving={saving} />
-        {pos && (
-          <button type="button" onClick={syncMenu} disabled={syncing}
-            className="px-4 h-10 rounded-lg text-sm font-600 font-display shrink-0"
-            style={{ background: 'rgba(59,130,246,0.1)', color: '#3B82F6', border: '1px solid rgba(59,130,246,0.2)' }}>
-            {syncing ? 'Syncing...' : 'Sync Menu'}
-          </button>
+    <div className="space-y-4 max-w-[560px]">
+      {/* Config form */}
+      <form onSubmit={save} className="card p-6 space-y-4">
+        <h3 className="font-display font-700 text-sm text-white">POS Integration</h3>
+
+        <div>
+          <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">POS Type</label>
+          <select value={form.posType} onChange={e => {
+            const t = e.target.value;
+            setForm(f => ({ ...f, posType: t, apiUrl: POS_TYPE_URLS[t] ?? '' }));
+          }}>
+            <option value="poster">Poster</option>
+            <option value="syrve" disabled>Syrve (soon)</option>
+            <option value="rkeeper" disabled>R-Keeper (soon)</option>
+          </select>
+        </div>
+
+        <Field label="API URL" value={form.apiUrl} onChange={v => setForm(f => ({ ...f, apiUrl: v }))} placeholder="https://joinposter.com/api" />
+
+        <div>
+          <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">API Token</label>
+          <input
+            type="password"
+            value={form.accessToken}
+            onChange={e => setForm(f => ({ ...f, accessToken: e.target.value }))}
+            placeholder={pos ? '[SAVED — enter new to change]' : 'Poster access token'}
+            className="w-full"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">
+            Spot ID <span className="normal-case text-ink-500 font-400">(optional, for multi-location accounts)</span>
+          </label>
+          <input value={form.spotId} onChange={e => setForm(f => ({ ...f, spotId: e.target.value }))} placeholder="e.g. 1" className="w-full" />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <input type="checkbox" id="syncEnabled" checked={form.syncEnabled}
+            onChange={e => setForm(f => ({ ...f, syncEnabled: e.target.checked }))}
+            className="w-4 h-4 accent-rose-500" />
+          <label htmlFor="syncEnabled" className="text-sm text-ink-200 font-display font-600">Auto-sync enabled</label>
+        </div>
+
+        {form.syncEnabled && (
+          <div>
+            <label className="block text-xs font-600 uppercase tracking-widest text-ink-300 mb-2 font-display">Sync interval (minutes)</label>
+            <input type="number" min={15} max={1440} value={form.syncInterval}
+              onChange={e => setForm(f => ({ ...f, syncInterval: Number(e.target.value) }))}
+              className="w-32" />
+          </div>
         )}
-      </div>
-    </form>
+
+        <SaveBtn saving={saving} />
+      </form>
+
+      {/* Actions + status */}
+      {pos && (
+        <div className="card p-5 space-y-3">
+          <h3 className="font-display font-700 text-sm text-white">Actions</h3>
+
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={testConnection} disabled={testing}
+              className="px-4 h-10 rounded-lg text-sm font-600 font-display"
+              style={{ background: 'rgba(16,185,129,0.1)', color: '#10B981', border: '1px solid rgba(16,185,129,0.2)' }}>
+              {testing ? 'Testing...' : 'Test Connection'}
+            </button>
+            <button type="button" onClick={syncMenu} disabled={syncing}
+              className="px-4 h-10 rounded-lg text-sm font-600 font-display"
+              style={{ background: 'rgba(59,130,246,0.1)', color: '#3B82F6', border: '1px solid rgba(59,130,246,0.2)' }}>
+              {syncing ? 'Syncing...' : 'Sync Menu Now'}
+            </button>
+          </div>
+
+          {testResult && (
+            <p className="text-sm" style={{ color: testResult.ok ? '#10B981' : '#F43F5E' }}>
+              {testResult.ok ? '✓' : '✗'} {testResult.msg}
+            </p>
+          )}
+          {syncResult && (
+            <p className="text-sm" style={{ color: syncResult.includes('failed') ? '#F43F5E' : '#10B981' }}>
+              {syncResult}
+            </p>
+          )}
+
+          <div className="text-xs text-ink-500 space-y-0.5 pt-1 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+            <p>Last sync: {lastSync ?? 'Never'}</p>
+            {pos.lastError && <p style={{ color: '#F43F5E' }}>Error: {pos.lastError}</p>}
+          </div>
+        </div>
+      )}
+
+      {/* Category mapping */}
+      {pos && (
+        <div className="card p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-display font-700 text-sm text-white">Category Mapping</h3>
+            <span className="text-xs text-ink-500">POS category → app category</span>
+          </div>
+
+          {posCats.length === 0 ? (
+            <p className="text-xs text-ink-500">Sync menu first to load POS categories.</p>
+          ) : (
+            <div className="space-y-2">
+              {posCats.map(cat => (
+                <div key={cat.id} className="flex items-center gap-3">
+                  <span className="text-sm text-ink-200 w-40 shrink-0 truncate" title={cat.name}>{cat.name}</span>
+                  <span className="text-ink-500 text-xs">→</span>
+                  <select
+                    value={categoryMap[cat.name] ?? ''}
+                    onChange={e => setCategoryMap(m => ({ ...m, [cat.name]: e.target.value }))}
+                    className="flex-1 text-sm"
+                  >
+                    <option value="">— auto detect —</option>
+                    {OUR_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {posCats.length > 0 && (
+            <button type="button" onClick={saveMapping} disabled={savingMap}
+              className="px-4 h-10 rounded-lg text-sm font-600 font-display"
+              style={{ background: 'rgba(244,63,94,0.1)', color: '#F43F5E', border: '1px solid rgba(244,63,94,0.2)' }}>
+              {savingMap ? 'Saving...' : 'Save Mapping'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1504,6 +2107,241 @@ function TemplatesTab({ hotelId, token }: { hotelId: string; token: string }) {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Network Tab ────────────────────────────────────────────────────────────
+
+function NetworkTab({ hotelId, token, currentChainId }: { hotelId: string; token: string; currentChainId: string | null }) {
+  const qc = useQueryClient();
+  const [enabled, setEnabled] = useState(!!currentChainId);
+  const [searchQ, setSearchQ] = useState('');
+  const [searchResults, setSearchResults] = useState<HotelSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [newChainName, setNewChainName] = useState('');
+  const [creatingChain, setCreatingChain] = useState(false);
+
+  const { data: chains = [] } = useQuery({
+    queryKey: ['admin-chains'],
+    queryFn: () => adminApi.listChains(token),
+  });
+
+  const currentChain = chains.find(c => c.id === currentChainId) ?? null;
+
+  const handleToggle = async () => {
+    if (enabled && currentChainId) {
+      // Detach from chain
+      try {
+        await adminApi.setHotelChain(token, hotelId, null);
+        qc.invalidateQueries({ queryKey: ['admin-hotel', hotelId] });
+        qc.invalidateQueries({ queryKey: ['admin-chains'] });
+        setEnabled(false);
+        toast.success('Отель отключён от сети');
+      } catch { toast.error('Ошибка'); }
+    } else {
+      setEnabled(true);
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchQ.trim()) return;
+    setSearching(true);
+    try {
+      const results = await adminApi.searchHotels(token, searchQ);
+      setSearchResults(results.filter(h => h.id !== hotelId));
+    } catch { toast.error('Ошибка поиска'); }
+    finally { setSearching(false); }
+  };
+
+  const joinChain = async (chainId: string) => {
+    try {
+      await adminApi.setHotelChain(token, hotelId, chainId);
+      qc.invalidateQueries({ queryKey: ['admin-hotel', hotelId] });
+      qc.invalidateQueries({ queryKey: ['admin-chains'] });
+      toast.success('Отель добавлен в сеть');
+    } catch { toast.error('Ошибка'); }
+  };
+
+  const addHotelToChain = async (targetHotelId: string, chainId: string) => {
+    try {
+      await adminApi.setHotelChain(token, targetHotelId, chainId);
+      qc.invalidateQueries({ queryKey: ['admin-chains'] });
+      toast.success('Отель добавлен в сеть');
+    } catch { toast.error('Ошибка'); }
+  };
+
+  const removeHotelFromChain = async (targetHotelId: string) => {
+    try {
+      await adminApi.setHotelChain(token, targetHotelId, null);
+      qc.invalidateQueries({ queryKey: ['admin-chains'] });
+      toast.success('Отель удалён из сети');
+    } catch { toast.error('Ошибка'); }
+  };
+
+  const createChain = async () => {
+    if (!newChainName.trim()) return;
+    setCreatingChain(true);
+    try {
+      const chain = await adminApi.createChain(token, newChainName.trim());
+      await adminApi.setHotelChain(token, hotelId, chain.id);
+      qc.invalidateQueries({ queryKey: ['admin-hotel', hotelId] });
+      qc.invalidateQueries({ queryKey: ['admin-chains'] });
+      setNewChainName('');
+      toast.success('Сеть создана и отель добавлен');
+    } catch { toast.error('Ошибка создания сети'); }
+    finally { setCreatingChain(false); }
+  };
+
+  return (
+    <div className="space-y-6 max-w-[600px]">
+      {/* Toggle */}
+      <div className="card p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-600 font-display text-white">Сетевой режим</p>
+            <p className="text-xs text-ink-400 mt-0.5">Объединяйте отели с одним названием в сеть</p>
+          </div>
+          <button
+            onClick={handleToggle}
+            className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
+            style={{ background: enabled ? '#F43F5E' : 'rgba(255,255,255,0.1)' }}>
+            <span className="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+              style={{ transform: enabled ? 'translateX(22px)' : 'translateX(2px)' }} />
+          </button>
+        </div>
+      </div>
+
+      {enabled && (
+        <>
+          {/* Current chain info */}
+          {currentChain ? (
+            <div className="card p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-ink-400 uppercase tracking-widest font-display mb-1">Текущая сеть</p>
+                  <p className="font-600 text-white text-lg">{currentChain.name}</p>
+                  <p className="text-xs text-ink-400 mt-0.5">{currentChain.hotels.length} отел{currentChain.hotels.length === 1 ? 'ь' : currentChain.hotels.length < 5 ? 'я' : 'ей'} в сети</p>
+                </div>
+              </div>
+
+              {/* Hotels in chain */}
+              <div className="space-y-2">
+                {currentChain.hotels.map(h => (
+                  <div key={h.id} className="flex items-center justify-between p-3 rounded-lg"
+                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div>
+                      <p className="text-sm font-600 text-white">{h.name}</p>
+                      <p className="text-xs text-ink-400">{h.location ?? h.slug}</p>
+                    </div>
+                    {h.id !== hotelId && (
+                      <button onClick={() => removeHotelFromChain(h.id)}
+                        className="text-xs text-rose-400 hover:text-rose-300 transition-colors px-2 py-1 rounded"
+                        style={{ background: 'rgba(244,63,94,0.1)' }}>
+                        Удалить
+                      </button>
+                    )}
+                    {h.id === hotelId && (
+                      <span className="text-xs text-ink-500 px-2 py-1">текущий</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Search to add hotels */}
+              <div>
+                <p className="text-xs text-ink-400 uppercase tracking-widest font-display mb-2">Добавить отель в сеть</p>
+                <div className="flex gap-2">
+                  <input
+                    value={searchQ}
+                    onChange={e => setSearchQ(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                    placeholder="Поиск по названию..."
+                    className="flex-1"
+                  />
+                  <button onClick={handleSearch} disabled={searching}
+                    className="px-4 py-2 rounded-lg text-sm font-600 font-display transition-all"
+                    style={{ background: 'rgba(244,63,94,0.15)', color: '#F43F5E', border: '1px solid rgba(244,63,94,0.3)' }}>
+                    {searching ? '...' : 'Найти'}
+                  </button>
+                </div>
+
+                {searchResults.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {searchResults.map(h => (
+                      <div key={h.id} className="flex items-center justify-between p-3 rounded-lg"
+                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div>
+                          <p className="text-sm font-600 text-white">{h.name}</p>
+                          <p className="text-xs text-ink-400">{h.location ?? h.slug}</p>
+                          {h.chainId && h.chainId !== currentChain.id && (
+                            <p className="text-xs text-amber-400 mt-0.5">Уже в другой сети</p>
+                          )}
+                          {h.chainId === currentChain.id && (
+                            <p className="text-xs text-emerald-400 mt-0.5">Уже в этой сети</p>
+                          )}
+                        </div>
+                        {h.chainId !== currentChain.id && (
+                          <button onClick={() => addHotelToChain(h.id, currentChain.id)}
+                            className="text-xs font-600 px-3 py-1.5 rounded-lg transition-all"
+                            style={{ background: 'linear-gradient(135deg, #F43F5E, #FF6B8A)', color: '#fff' }}>
+                            + Добавить
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            /* No chain yet — create or join */
+            <div className="space-y-4">
+              {/* Create new chain */}
+              <div className="card p-6 space-y-3">
+                <p className="font-600 font-display text-white">Создать новую сеть</p>
+                <p className="text-xs text-ink-400">Введите название сети и этот отель станет первым участником</p>
+                <div className="flex gap-2">
+                  <input
+                    value={newChainName}
+                    onChange={e => setNewChainName(e.target.value)}
+                    placeholder="Название сети (напр. Hilton Ukraine)"
+                    className="flex-1"
+                  />
+                  <button onClick={createChain} disabled={creatingChain || !newChainName.trim()}
+                    className="px-4 py-2 rounded-lg text-sm font-600 font-display transition-all"
+                    style={{ background: 'linear-gradient(135deg, #F43F5E, #FF6B8A)', color: '#fff', opacity: creatingChain || !newChainName.trim() ? 0.5 : 1 }}>
+                    {creatingChain ? 'Создание...' : 'Создать'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Join existing chain */}
+              {chains.length > 0 && (
+                <div className="card p-6 space-y-3">
+                  <p className="font-600 font-display text-white">Присоединиться к существующей сети</p>
+                  <div className="space-y-2">
+                    {chains.map(chain => (
+                      <div key={chain.id} className="flex items-center justify-between p-3 rounded-lg"
+                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div>
+                          <p className="text-sm font-600 text-white">{chain.name}</p>
+                          <p className="text-xs text-ink-400">{chain.hotels.length} отел{chain.hotels.length === 1 ? 'ь' : chain.hotels.length < 5 ? 'я' : 'ей'}</p>
+                        </div>
+                        <button onClick={() => joinChain(chain.id)}
+                          className="text-xs font-600 px-3 py-1.5 rounded-lg transition-all"
+                          style={{ background: 'rgba(244,63,94,0.15)', color: '#F43F5E', border: '1px solid rgba(244,63,94,0.3)' }}>
+                          Войти в сеть
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

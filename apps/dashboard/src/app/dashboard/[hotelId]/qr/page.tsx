@@ -3,6 +3,7 @@ import { use, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useDashboardAuth } from '@/contexts/DashboardAuthContext';
 import { dashboardApi } from '@/lib/api/dashboard';
+import { getApiBase } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { useI18n } from '@/lib/i18n';
 
@@ -155,9 +156,19 @@ export default function QRPage({ params }: { params: Promise<{ hotelId: string }
           {qrCodes.map(qr => (
             <div key={qr.id} className="card p-4 card-interactive flex flex-col items-center text-center gap-3">
               {/* QR preview */}
-              <div className="w-[100px] h-[100px] rounded-xl flex items-center justify-center text-4xl relative"
+              <div className="w-[100px] h-[100px] rounded-xl overflow-hidden relative flex items-center justify-center"
                 style={{ background: 'rgba(255,255,255,0.06)' }}>
-                {QR_TYPE_ICONS[qr.type] || '📱'}
+                {qr.qrImagePath ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`${getApiBase()}/uploads/qr/${qr.hotelId}/${qr.id}.png`}
+                    alt={qr.label}
+                    className="w-full h-full object-contain p-1"
+                    style={{ background: '#fff' }}
+                  />
+                ) : (
+                  <span className="text-4xl">{QR_TYPE_ICONS[qr.type] || '📱'}</span>
+                )}
                 {!qr.isActive && (
                   <div className="absolute inset-0 rounded-xl flex items-center justify-center"
                     style={{ background: 'rgba(0,0,0,0.6)' }}>

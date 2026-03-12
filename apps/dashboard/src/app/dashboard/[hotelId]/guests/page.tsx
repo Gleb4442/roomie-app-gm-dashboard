@@ -8,6 +8,7 @@ import { StageBadge } from '@/components/ui/StageBadge';
 import { Pagination } from '@/components/ui/Pagination';
 import { formatDate } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { useRouter } from 'next/navigation';
 
 const STAGES: { value: string; key: string }[] = [
   { value: '', key: 'guests.allStages' },
@@ -23,6 +24,7 @@ export default function GuestsPage({ params }: { params: Promise<{ hotelId: stri
   const { hotelId } = use(params);
   const { token } = useDashboardAuth();
   const { t } = useI18n();
+  const router = useRouter();
   const [stage, setStage] = useState('');
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
@@ -114,7 +116,7 @@ export default function GuestsPage({ params }: { params: Promise<{ hotelId: stri
               </thead>
               <tbody>
                 {data.guests.map(guest => (
-                  <tr key={guest.id}>
+                  <tr key={guest.id} onClick={() => router.push(`/dashboard/${hotelId}/guests/${guest.guestId}`)} className="cursor-pointer hover:bg-white/[0.02] transition-colors">
                     <td>
                       <div className="flex items-center gap-2.5">
                         <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-700 shrink-0"
